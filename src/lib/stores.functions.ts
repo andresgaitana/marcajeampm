@@ -76,7 +76,12 @@ export const updateStore = createServerFn({ method: "POST" })
   }).parse(i))
   .handler(async ({ context, data }) => {
     await assertAdmin(context.userId);
-    const patch: Record<string, unknown> = {};
+    const patch: {
+      name?: string;
+      address?: string | null;
+      active?: boolean;
+      terminal_pin_hash?: string;
+    } = {};
     if (data.name !== undefined) patch.name = data.name;
     if (data.address !== undefined) patch.address = data.address;
     if (data.active !== undefined) patch.active = data.active;
