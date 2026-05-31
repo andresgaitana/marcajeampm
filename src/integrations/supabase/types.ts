@@ -21,6 +21,7 @@ export type Database = {
           id: string
           notes: string | null
           selfie_url: string | null
+          store_id: string
           type: Database["public"]["Enums"]["attendance_type"]
         }
         Insert: {
@@ -29,6 +30,7 @@ export type Database = {
           id?: string
           notes?: string | null
           selfie_url?: string | null
+          store_id: string
           type: Database["public"]["Enums"]["attendance_type"]
         }
         Update: {
@@ -37,6 +39,7 @@ export type Database = {
           id?: string
           notes?: string | null
           selfie_url?: string | null
+          store_id?: string
           type?: Database["public"]["Enums"]["attendance_type"]
         }
         Relationships: [
@@ -45,6 +48,13 @@ export type Database = {
             columns: ["employee_id"]
             isOneToOne: false
             referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_records_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
             referencedColumns: ["id"]
           },
         ]
@@ -59,6 +69,7 @@ export type Database = {
           pin_hash: string
           role: Database["public"]["Enums"]["employee_role"]
           store: string | null
+          store_id: string
           updated_at: string
         }
         Insert: {
@@ -70,6 +81,7 @@ export type Database = {
           pin_hash: string
           role?: Database["public"]["Enums"]["employee_role"]
           store?: string | null
+          store_id: string
           updated_at?: string
         }
         Update: {
@@ -81,6 +93,77 @@ export type Database = {
           pin_hash?: string
           role?: Database["public"]["Enums"]["employee_role"]
           store?: string | null
+          store_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "employees_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      store_managers: {
+        Row: {
+          created_at: string
+          id: string
+          store_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          store_id: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          store_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_managers_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      stores: {
+        Row: {
+          active: boolean
+          address: string | null
+          code: string
+          created_at: string
+          id: string
+          name: string
+          terminal_pin_hash: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          address?: string | null
+          code: string
+          created_at?: string
+          id?: string
+          name: string
+          terminal_pin_hash: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          address?: string | null
+          code?: string
+          created_at?: string
+          id?: string
+          name?: string
+          terminal_pin_hash?: string
           updated_at?: string
         }
         Relationships: []
@@ -116,6 +199,10 @@ export type Database = {
           _role: Database["public"]["Enums"]["app_role"]
           _user_id: string
         }
+        Returns: boolean
+      }
+      is_store_manager: {
+        Args: { _store_id: string; _user_id: string }
         Returns: boolean
       }
     }
