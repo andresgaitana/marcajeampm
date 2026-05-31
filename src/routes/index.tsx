@@ -1,11 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { Clock, LogIn, LogOut, ShieldCheck, UserCircle2, Loader2, CheckCircle2 } from "lucide-react";
+import { Clock, LogIn, LogOut, ShieldCheck, UserCircle2, Loader2, CheckCircle2, Store, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { PinPad } from "@/components/PinPad";
 import { SelfieCapture } from "@/components/SelfieCapture";
-import { lookupEmployee, markAttendance } from "@/lib/attendance.functions";
+import { lookupEmployee, markAttendance, validateTerminal } from "@/lib/attendance.functions";
+import { useTerminalStore } from "@/hooks/useTerminalStore";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
@@ -26,6 +29,7 @@ type AttType = "entrada" | "salida";
 function MarcajePage() {
   const lookup = useServerFn(lookupEmployee);
   const mark = useServerFn(markAttendance);
+  const { store: terminal, ready, save, clear } = useTerminalStore();
 
   const [step, setStep] = useState<Step>("code");
   const [code, setCode] = useState("");
@@ -42,7 +46,7 @@ function MarcajePage() {
   }, []);
 
   const reset = () => {
-    setStep("code");
+    setStep("type");
     setCode("");
     setPin("");
     setType(null);
@@ -51,17 +55,21 @@ function MarcajePage() {
   };
 
   const submitCode = async () => {
-    if (!code) return;
+    if (!code || !type || !terminal) return;
     setLoading(true);
     try {
-      const res = await lookup({ data: { employeeCode: code } });
+      const res = await lookup({ data: { employeeCode: code, storeCode: terminal.code } });
       if (!res.found) {
-        toast.error("Código no encontrado o colaborador inactivo");
+        toast.error(
+          "wrongStore" in res && res.wrongStore
+            ? `Este colaborador no pertenece a ${terminal.name}`
+            : "Código no encontrado o colaborador inactivo",
+        );
         setCode("");
         return;
       }
       setEmployeeName(res.full_name);
-      setStep("type");
+      setStep("pin");
     } catch {
       toast.error("Error al validar el código");
     } finally {
@@ -71,7 +79,7 @@ function MarcajePage() {
 
   const chooseType = (t: AttType) => {
     setType(t);
-    setStep("pin");
+    setStep("code");
   };
 
   const submitPin = () => {
@@ -83,7 +91,7 @@ function MarcajePage() {
   };
 
   const onSelfie = async (dataUrl: string) => {
-    if (!type) return;
+    if (!type || !terminal) return;
     setStep("confirming");
     try {
       const res = await mark({
@@ -92,6 +100,8 @@ function MarcajePage() {
           pin,
           type,
           selfieDataUrl: dataUrl,
+          storeCode: terminal.code,
+          terminalPin: terminal.pin,
         },
       });
       if (!res.ok) {
@@ -115,16 +125,38 @@ function MarcajePage() {
     }
   };
 
+  // Set initial step when terminal is ready
+  useEffect(() => {
+    if (ready && terminal && step === "code" && !type) setStep("type");
+  }, [ready, terminal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
+      </div>
+    );
+  }
+
+  if (!terminal) {
+    return <TerminalSetup onDone={save} />;
+  }
+
+  const typeColorClass = type === "entrada" ? "bg-success" : "bg-accent";
+  const typeLabel = type === "entrada" ? "ENTRADA" : "SALIDA";
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-secondary to-background flex flex-col">
-      <header className="flex items-center justify-between p-4 md:px-8">
-        <div className="flex items-center gap-3">
-          <div className="h-11 w-11 rounded-xl bg-[var(--gradient-brand)] flex items-center justify-center shadow-[var(--shadow-soft)]">
-            <Clock className="h-6 w-6 text-primary-foreground" />
+      <header className="flex items-center justify-between p-4 md:px-8 gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-11 w-11 rounded-xl bg-[var(--gradient-brand)] flex items-center justify-center shadow-[var(--shadow-soft)] shrink-0">
+            <Store className="h-6 w-6 text-primary-foreground" />
           </div>
-          <div>
-            <h1 className="text-base font-bold tracking-tight text-foreground leading-tight">Control de Asistencia</h1>
-            <p className="text-xs text-muted-foreground">Marcaje de entrada y salida</p>
+          <div className="min-w-0">
+            <h1 className="text-base font-bold tracking-tight text-foreground leading-tight truncate">
+              {terminal.name}
+            </h1>
+            <p className="text-xs text-muted-foreground font-mono">Tienda {terminal.code}</p>
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -136,6 +168,16 @@ function MarcajePage() {
               {now.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" })}
             </div>
           </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => {
+              if (confirm("¿Desvincular esta tienda de la terminal?")) clear();
+            }}
+          >
+            <Settings2 className="h-4 w-4" />
+          </Button>
           <Link to="/admin">
             <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-primary">
               <ShieldCheck className="h-4 w-4 mr-1" />
@@ -145,8 +187,44 @@ function MarcajePage() {
         </div>
       </header>
 
+      {type && step !== "done" && (
+        <div className={`${typeColorClass} text-white py-3 px-4 text-center font-bold text-lg tracking-wider shadow-md`}>
+          MARCANDO {typeLabel}
+        </div>
+      )}
+
       <main className="flex-1 flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-card rounded-3xl shadow-[var(--shadow-soft)] border border-border p-6 md:p-8">
+          {step === "type" && (
+            <>
+              <div className="text-center mb-6">
+                <div className="mx-auto h-14 w-14 rounded-2xl bg-[var(--gradient-brand)] flex items-center justify-center mb-3">
+                  <Clock className="h-8 w-8 text-primary-foreground" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">¿Qué deseas marcar?</h2>
+                <p className="text-sm text-muted-foreground mt-1">Selecciona el tipo</p>
+              </div>
+              <div className="grid grid-cols-1 gap-4">
+                <button
+                  onClick={() => chooseType("entrada")}
+                  className="group h-40 rounded-2xl bg-success text-white flex flex-col items-center justify-center gap-3 shadow-[var(--shadow-soft)] active:scale-95 transition-transform"
+                >
+                  <LogIn className="h-14 w-14" />
+                  <span className="text-2xl font-bold tracking-wider">ENTRADA</span>
+                  <span className="text-xs opacity-80">Llegada al turno</span>
+                </button>
+                <button
+                  onClick={() => chooseType("salida")}
+                  className="group h-40 rounded-2xl bg-accent text-white flex flex-col items-center justify-center gap-3 shadow-[var(--shadow-soft)] active:scale-95 transition-transform"
+                >
+                  <LogOut className="h-14 w-14" />
+                  <span className="text-2xl font-bold tracking-wider">SALIDA</span>
+                  <span className="text-xs opacity-80">Fin del turno</span>
+                </button>
+              </div>
+            </>
+          )}
+
           {step === "code" && (
             <>
               <div className="text-center mb-6">
@@ -157,42 +235,18 @@ function MarcajePage() {
                 <p className="text-sm text-muted-foreground mt-1">Código de colaborador</p>
               </div>
               <PinPad value={code} onChange={setCode} maxLength={8} />
-              <Button
-                className="w-full h-14 mt-6 text-base bg-primary text-primary-foreground hover:bg-primary/90"
-                disabled={!code || loading}
-                onClick={submitCode}
-              >
-                {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Continuar"}
-              </Button>
-            </>
-          )}
-
-          {step === "type" && (
-            <>
-              <div className="text-center mb-6">
-                <p className="text-sm text-muted-foreground">Hola,</p>
-                <h2 className="text-2xl font-bold text-foreground">{employeeName}</h2>
-                <p className="text-sm text-muted-foreground mt-3">¿Qué deseas marcar?</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => chooseType("entrada")}
-                  className="group h-36 rounded-2xl bg-[var(--gradient-brand)] text-primary-foreground flex flex-col items-center justify-center gap-2 shadow-[var(--shadow-soft)] active:scale-95 transition-transform"
+              <div className="flex gap-3 mt-6">
+                <Button variant="outline" className="flex-1 h-14" onClick={reset}>
+                  Atrás
+                </Button>
+                <Button
+                  className="flex-[2] h-14 text-base bg-primary text-primary-foreground hover:bg-primary/90"
+                  disabled={!code || loading}
+                  onClick={submitCode}
                 >
-                  <LogIn className="h-10 w-10" />
-                  <span className="text-lg font-semibold">Entrada</span>
-                </button>
-                <button
-                  onClick={() => chooseType("salida")}
-                  className="group h-36 rounded-2xl bg-[var(--gradient-accent)] text-accent-foreground flex flex-col items-center justify-center gap-2 shadow-[var(--shadow-soft)] active:scale-95 transition-transform"
-                >
-                  <LogOut className="h-10 w-10" />
-                  <span className="text-lg font-semibold">Salida</span>
-                </button>
+                  {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Continuar"}
+                </Button>
               </div>
-              <Button variant="ghost" className="w-full mt-4 text-muted-foreground" onClick={reset}>
-                Cancelar
-              </Button>
             </>
           )}
 
@@ -200,12 +254,7 @@ function MarcajePage() {
             <>
               <div className="text-center mb-6">
                 <p className="text-sm text-muted-foreground">{employeeName}</p>
-                <h2 className="text-xl font-bold text-foreground mt-1">
-                  Ingresa tu PIN para registrar{" "}
-                  <span className={type === "entrada" ? "text-primary" : "text-accent"}>
-                    {type === "entrada" ? "entrada" : "salida"}
-                  </span>
-                </h2>
+                <h2 className="text-xl font-bold text-foreground mt-1">Ingresa tu PIN</h2>
               </div>
               <PinPad value={pin} onChange={setPin} maxLength={8} mask />
               <div className="flex gap-3 mt-6">
@@ -213,7 +262,7 @@ function MarcajePage() {
                   Cancelar
                 </Button>
                 <Button
-                  className="flex-1 h-14 bg-accent text-accent-foreground hover:bg-accent/90"
+                  className={`flex-1 h-14 text-white ${type === "entrada" ? "bg-success hover:bg-success/90" : "bg-accent hover:bg-accent/90"}`}
                   disabled={pin.length < 4}
                   onClick={submitPin}
                 >
@@ -242,21 +291,19 @@ function MarcajePage() {
 
           {step === "done" && result && (
             <div className="text-center py-6">
-              <div className="mx-auto h-20 w-20 rounded-full bg-[oklch(0.65_0.16_155)]/10 flex items-center justify-center mb-4">
-                <CheckCircle2 className="h-12 w-12 text-[oklch(0.55_0.16_155)]" />
+              <div className={`mx-auto h-24 w-24 rounded-full ${result.type === "entrada" ? "bg-success" : "bg-accent"} flex items-center justify-center mb-4`}>
+                <CheckCircle2 className="h-14 w-14 text-white" />
               </div>
-              <h2 className="text-2xl font-bold text-foreground">¡Marcaje exitoso!</h2>
+              <div className={`text-3xl font-extrabold tracking-wider ${result.type === "entrada" ? "text-success" : "text-accent"}`}>
+                {result.type === "entrada" ? "ENTRADA REGISTRADA" : "SALIDA REGISTRADA"}
+              </div>
               <p className="text-muted-foreground mt-1">{result.name}</p>
               <div className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-secondary">
-                {result.type === "entrada" ? (
-                  <LogIn className="h-4 w-4 text-primary" />
-                ) : (
-                  <LogOut className="h-4 w-4 text-accent" />
-                )}
-                <span className="text-sm font-semibold capitalize text-foreground">{result.type}</span>
-                <span className="text-sm text-muted-foreground">
-                  · {new Date(result.timestamp).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}
+                <Clock className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-mono font-semibold text-foreground">
+                  {new Date(result.timestamp).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}
                 </span>
+                <span className="text-sm text-muted-foreground">· {result.store}</span>
               </div>
               <Button className="w-full mt-6 h-12" variant="outline" onClick={reset}>
                 Listo
@@ -269,6 +316,88 @@ function MarcajePage() {
       <footer className="text-center p-4 text-xs text-muted-foreground">
         Sistema de Marcaje · {now.getFullYear()}
       </footer>
+    </div>
+  );
+}
+
+function TerminalSetup({ onDone }: { onDone: (info: { id: string; code: string; name: string; pin: string }) => void }) {
+  const validate = useServerFn(validateTerminal);
+  const [storeCode, setStoreCode] = useState("");
+  const [pin, setPin] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await validate({ data: { storeCode: storeCode.trim().toUpperCase(), terminalPin: pin.trim() } });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      onDone({ ...res.store, pin: pin.trim() });
+      toast.success(`Terminal vinculada a ${res.store.name}`);
+    } catch {
+      toast.error("Error al validar terminal");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-background via-secondary to-background flex items-center justify-center p-4">
+      <form onSubmit={submit} className="w-full max-w-md bg-card rounded-3xl shadow-[var(--shadow-soft)] border border-border p-8 space-y-5">
+        <div className="text-center">
+          <div className="mx-auto h-16 w-16 rounded-2xl bg-[var(--gradient-brand)] flex items-center justify-center mb-3">
+            <Store className="h-8 w-8 text-primary-foreground" />
+          </div>
+          <h1 className="text-2xl font-bold text-foreground">Configurar terminal</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Vincula este dispositivo a una tienda. Solo se hace una vez.
+          </p>
+        </div>
+        <div>
+          <Label htmlFor="storeCode">Código de tienda</Label>
+          <Input
+            id="storeCode"
+            required
+            className="h-12 mt-1 font-mono uppercase tracking-wider"
+            placeholder="Ej. T001"
+            value={storeCode}
+            onChange={(e) => setStoreCode(e.target.value.toUpperCase())}
+          />
+        </div>
+        <div>
+          <Label htmlFor="pin">PIN de terminal</Label>
+          <Input
+            id="pin"
+            type="password"
+            inputMode="numeric"
+            required
+            minLength={4}
+            maxLength={8}
+            className="h-12 mt-1 font-mono"
+            placeholder="••••"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            Pídelo al administrador de tu tienda.
+          </p>
+        </div>
+        <Button
+          type="submit"
+          className="w-full h-12 bg-accent text-accent-foreground hover:bg-accent/90"
+          disabled={loading}
+        >
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Vincular terminal"}
+        </Button>
+        <div className="text-center">
+          <Link to="/admin" className="text-xs text-muted-foreground hover:text-primary">
+            Soy administrador →
+          </Link>
+        </div>
+      </form>
     </div>
   );
 }
