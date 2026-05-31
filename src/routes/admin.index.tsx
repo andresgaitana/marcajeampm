@@ -85,13 +85,14 @@ function AttendancePanel() {
     const lines = rows.map((r) => {
       const d = new Date(r.created_at);
       const emp = Array.isArray(r.employee) ? r.employee[0] : r.employee;
+      const st = Array.isArray(r.store) ? r.store[0] : r.store;
       return [
         d.toLocaleDateString("es-MX"),
         d.toLocaleTimeString("es-MX"),
         emp?.full_name ?? "",
         emp?.employee_code ?? "",
         emp?.role ?? "",
-        emp?.store ?? "",
+        st ? `${st.code} · ${st.name}` : "",
         r.type,
       ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",");
     });
@@ -146,6 +147,7 @@ function AttendancePanel() {
               rows.map((r) => {
                 const d = new Date(r.created_at);
                 const emp = Array.isArray(r.employee) ? r.employee[0] : r.employee;
+                const st = Array.isArray(r.store) ? r.store[0] : r.store;
                 return (
                   <TableRow key={r.id}>
                     <TableCell>
@@ -172,7 +174,9 @@ function AttendancePanel() {
                       <div className="text-xs text-muted-foreground">{emp?.employee_code}</div>
                     </TableCell>
                     <TableCell className="capitalize text-muted-foreground">{emp?.role}</TableCell>
-                    <TableCell className="text-muted-foreground">{emp?.store ?? "—"}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {st ? `${st.code} · ${st.name}` : "—"}
+                    </TableCell>
                     <TableCell>
                       {r.type === "entrada" ? (
                         <Badge className="bg-primary text-primary-foreground hover:bg-primary">
