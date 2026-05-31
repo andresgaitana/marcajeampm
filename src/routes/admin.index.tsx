@@ -9,6 +9,7 @@ import {
   updateEmployee,
   deleteEmployee,
 } from "@/lib/admin.functions";
+import { listStores } from "@/lib/stores.functions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -199,14 +200,17 @@ function EmployeesPanel() {
   const createFn = useServerFn(createEmployee);
   const updateFn = useServerFn(updateEmployee);
   const deleteFn = useServerFn(deleteEmployee);
+  const storesFn = useServerFn(listStores);
   const qc = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ["employees"],
     queryFn: () => fetchFn(),
   });
+  const { data: stores } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
 
   const employees = data ?? [];
+  const storeList = stores ?? [];
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<(typeof employees)[number] | null>(null);
@@ -214,7 +218,7 @@ function EmployeesPanel() {
     employee_code: "",
     full_name: "",
     role: "cajero" as EmployeeRole,
-    store: "",
+    store_id: "",
     pin: "",
     active: true,
   });
@@ -225,16 +229,27 @@ function EmployeesPanel() {
         employee_code: editing.employee_code,
         full_name: editing.full_name,
         role: editing.role as EmployeeRole,
-        store: editing.store ?? "",
+        store_id: editing.store_id ?? "",
         pin: "",
         active: editing.active,
       });
     } else {
-      setForm({ employee_code: "", full_name: "", role: "cajero", store: "", pin: "", active: true });
+      setForm({
+        employee_code: "",
+        full_name: "",
+        role: "cajero",
+        store_id: storeList[0]?.id ?? "",
+        pin: "",
+        active: true,
+      });
     }
-  }, [editing, open]);
+  }, [editing, open, storeList]);
 
   const save = async () => {
+    if (!form.store_id) {
+      toast.error("Selecciona una tienda");
+      return;
+    }
     try {
       if (editing) {
         await updateFn({
@@ -242,7 +257,7 @@ function EmployeesPanel() {
             id: editing.id,
             full_name: form.full_name,
             role: form.role,
-            store: form.store || null,
+            store_id: form.store_id,
             active: form.active,
             ...(form.pin ? { pin: form.pin } : {}),
           },
@@ -254,7 +269,7 @@ function EmployeesPanel() {
             employee_code: form.employee_code,
             full_name: form.full_name,
             role: form.role,
-            store: form.store || null,
+            store_id: form.store_id,
             pin: form.pin,
             active: form.active,
           },
@@ -328,11 +343,16 @@ function EmployeesPanel() {
                 </div>
                 <div>
                   <Label>Tienda</Label>
-                  <Input
-                    value={form.store}
-                    onChange={(e) => setForm({ ...form, store: e.target.value })}
-                    placeholder="Opcional"
-                  />
+                  <Select value={form.store_id} onValueChange={(v) => setForm({ ...form, store_id: v })}>
+                    <SelectTrigger><SelectValue placeholder="Selecciona…" /></SelectTrigger>
+                    <SelectContent>
+                      {storeList.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {s.code} · {s.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <div>
@@ -390,7 +410,12 @@ function EmployeesPanel() {
                 <TableCell className="font-mono text-foreground">{e.employee_code}</TableCell>
                 <TableCell className="font-medium text-foreground">{e.full_name}</TableCell>
                 <TableCell className="capitalize text-muted-foreground">{e.role}</TableCell>
-                <TableCell className="text-muted-foreground">{e.store ?? "—"}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {(() => {
+                    const s = storeList.find((x) => x.id === e.store_id);
+                    return s ? `${s.code} · ${s.name}` : (e.store ?? "—");
+                  })()}
+                </TableCell>
                 <TableCell>
                   {e.active ? (
                     <Badge className="bg-[oklch(0.65_0.16_155)] text-white hover:bg-[oklch(0.65_0.16_155)]">Activo</Badge>
