@@ -175,7 +175,20 @@ function MarcajePage() {
     if (!type || !terminal) return;
     setStep("confirming");
     try {
-      const payload: Record<string, unknown> = {
+      type MarkInput = {
+        employeeCode: string;
+        type: AttType;
+        selfieDataUrl: string;
+        storeCode: string;
+        terminalPin: string;
+        pin?: string;
+        password?: string;
+        webauthnResponse?: unknown;
+        latitude?: number;
+        longitude?: number;
+        locationAccuracyM?: number;
+      };
+      const payload: MarkInput = {
         employeeCode: code,
         type,
         selfieDataUrl: dataUrl,
@@ -190,7 +203,7 @@ function MarcajePage() {
         payload.longitude = geo.lng;
         payload.locationAccuracyM = geo.accuracy;
       }
-      const res = await mark({ data: payload as Parameters<typeof mark>[0]["data"] });
+      const res = await mark({ data: payload });
       if (!res.ok) {
         toast.error(res.error);
         setPin("");
