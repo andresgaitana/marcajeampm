@@ -16,27 +16,42 @@ export type Database = {
     Tables: {
       attendance_records: {
         Row: {
+          auth_method: Database["public"]["Enums"]["auth_method"]
           created_at: string
           employee_id: string
           id: string
+          latitude: number | null
+          location_accuracy_m: number | null
+          location_valid: boolean
+          longitude: number | null
           notes: string | null
           selfie_url: string | null
           store_id: string
           type: Database["public"]["Enums"]["attendance_type"]
         }
         Insert: {
+          auth_method?: Database["public"]["Enums"]["auth_method"]
           created_at?: string
           employee_id: string
           id?: string
+          latitude?: number | null
+          location_accuracy_m?: number | null
+          location_valid?: boolean
+          longitude?: number | null
           notes?: string | null
           selfie_url?: string | null
           store_id: string
           type: Database["public"]["Enums"]["attendance_type"]
         }
         Update: {
+          auth_method?: Database["public"]["Enums"]["auth_method"]
           created_at?: string
           employee_id?: string
           id?: string
+          latitude?: number | null
+          location_accuracy_m?: number | null
+          location_valid?: boolean
+          longitude?: number | null
           notes?: string | null
           selfie_url?: string | null
           store_id?: string
@@ -59,6 +74,50 @@ export type Database = {
           },
         ]
       }
+      employee_credentials: {
+        Row: {
+          counter: number
+          created_at: string
+          credential_id: string
+          device_label: string | null
+          employee_id: string
+          id: string
+          last_used_at: string | null
+          public_key: string
+          transports: string | null
+        }
+        Insert: {
+          counter?: number
+          created_at?: string
+          credential_id: string
+          device_label?: string | null
+          employee_id: string
+          id?: string
+          last_used_at?: string | null
+          public_key: string
+          transports?: string | null
+        }
+        Update: {
+          counter?: number
+          created_at?: string
+          credential_id?: string
+          device_label?: string | null
+          employee_id?: string
+          id?: string
+          last_used_at?: string | null
+          public_key?: string
+          transports?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "employee_credentials_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       employees: {
         Row: {
           active: boolean
@@ -66,11 +125,13 @@ export type Database = {
           employee_code: string
           full_name: string
           id: string
+          password_hash: string | null
           pin_hash: string
           role: Database["public"]["Enums"]["employee_role"]
           store: string | null
           store_id: string
           updated_at: string
+          username: string | null
         }
         Insert: {
           active?: boolean
@@ -78,11 +139,13 @@ export type Database = {
           employee_code: string
           full_name: string
           id?: string
+          password_hash?: string | null
           pin_hash: string
           role?: Database["public"]["Enums"]["employee_role"]
           store?: string | null
           store_id: string
           updated_at?: string
+          username?: string | null
         }
         Update: {
           active?: boolean
@@ -90,11 +153,13 @@ export type Database = {
           employee_code?: string
           full_name?: string
           id?: string
+          password_hash?: string | null
           pin_hash?: string
           role?: Database["public"]["Enums"]["employee_role"]
           store?: string | null
           store_id?: string
           updated_at?: string
+          username?: string | null
         }
         Relationships: [
           {
@@ -141,7 +206,10 @@ export type Database = {
           address: string | null
           code: string
           created_at: string
+          geofence_radius_m: number
           id: string
+          latitude: number | null
+          longitude: number | null
           name: string
           terminal_pin_hash: string
           updated_at: string
@@ -151,7 +219,10 @@ export type Database = {
           address?: string | null
           code: string
           created_at?: string
+          geofence_radius_m?: number
           id?: string
+          latitude?: number | null
+          longitude?: number | null
           name: string
           terminal_pin_hash: string
           updated_at?: string
@@ -161,7 +232,10 @@ export type Database = {
           address?: string | null
           code?: string
           created_at?: string
+          geofence_radius_m?: number
           id?: string
+          latitude?: number | null
+          longitude?: number | null
           name?: string
           terminal_pin_hash?: string
           updated_at?: string
@@ -189,6 +263,41 @@ export type Database = {
         }
         Relationships: []
       }
+      webauthn_challenges: {
+        Row: {
+          challenge: string
+          created_at: string
+          employee_id: string | null
+          expires_at: string
+          id: string
+          purpose: string
+        }
+        Insert: {
+          challenge: string
+          created_at?: string
+          employee_id?: string | null
+          expires_at?: string
+          id?: string
+          purpose: string
+        }
+        Update: {
+          challenge?: string
+          created_at?: string
+          employee_id?: string | null
+          expires_at?: string
+          id?: string
+          purpose?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "webauthn_challenges_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -209,6 +318,7 @@ export type Database = {
     Enums: {
       app_role: "admin"
       attendance_type: "entrada" | "salida"
+      auth_method: "pin" | "password" | "webauthn"
       employee_role: "cajero" | "gerente" | "seguridad"
     }
     CompositeTypes: {
@@ -339,6 +449,7 @@ export const Constants = {
     Enums: {
       app_role: ["admin"],
       attendance_type: ["entrada", "salida"],
+      auth_method: ["pin", "password", "webauthn"],
       employee_role: ["cajero", "gerente", "seguridad"],
     },
   },
