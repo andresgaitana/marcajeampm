@@ -72,7 +72,7 @@ export const listEmployees = createServerFn({ method: "GET" })
     const scope = await getScope(context.userId);
     let q = supabaseAdmin
       .from("employees")
-      .select("id, employee_code, full_name, role, store, store_id, active, created_at, stores(code, name)")
+      .select("id, employee_code, full_name, role, store, store_id, active, username, created_at, stores(code, name)")
       .order("created_at", { ascending: false });
     if (scope.storeIds !== "all") q = q.in("store_id", scope.storeIds);
     const { data, error } = await q;
