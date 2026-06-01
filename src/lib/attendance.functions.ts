@@ -1,16 +1,27 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
+import { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { verifyPin } from "./pin.server";
+import { verifyPassword } from "./password.server";
+import { haversineMeters } from "./geo";
 
 const markInput = z.object({
   employeeCode: z.string().trim().min(1).max(32),
-  pin: z.string().trim().min(4).max(8),
   type: z.enum(["entrada", "salida"]),
   selfieDataUrl: z.string().min(20).max(8_000_000), // base64 data url
   notes: z.string().max(300).optional(),
   storeCode: z.string().trim().min(1).max(32),
   terminalPin: z.string().trim().min(4).max(12),
+  // Auth method: exactly one of these must be provided
+  pin: z.string().trim().min(4).max(8).optional(),
+  password: z.string().min(1).max(72).optional(),
+  webauthnResponse: z.any().optional(),
+  // Optional client geolocation
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  locationAccuracyM: z.number().min(0).max(100000).optional(),
 });
 
 /**
@@ -23,7 +34,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     // 1) Validate terminal (store + terminal PIN)
     const { data: store } = await supabaseAdmin
       .from("stores")
-      .select("id, code, name, terminal_pin_hash, active")
+      .select("id, code, name, terminal_pin_hash, active, latitude, longitude, geofence_radius_m")
       .eq("code", data.storeCode)
       .maybeSingle();
     if (!store || !store.active) return { ok: false as const, error: "Terminal no válida. Reconfigura la tienda." };
@@ -32,7 +43,7 @@ export const markAttendance = createServerFn({ method: "POST" })
 
     const { data: employee, error: empErr } = await supabaseAdmin
       .from("employees")
-      .select("id, full_name, role, store_id, pin_hash, active")
+      .select("id, full_name, role, store_id, pin_hash, password_hash, active")
       .eq("employee_code", data.employeeCode)
       .maybeSingle();
 
@@ -41,8 +52,70 @@ export const markAttendance = createServerFn({ method: "POST" })
     if (!employee.active) return { ok: false as const, error: "Colaborador inactivo" };
     if (employee.store_id !== store.id)
       return { ok: false as const, error: `Este colaborador no pertenece a ${store.name}` };
-    if (!verifyPin(data.pin, employee.pin_hash)) {
-      return { ok: false as const, error: "PIN incorrecto" };
+
+    // 2) Validate authentication: exactly one method
+    const provided = [data.pin, data.password, data.webauthnResponse].filter(Boolean).length;
+    if (provided !== 1)
+      return { ok: false as const, error: "Selecciona un único método de autenticación" };
+
+    let authMethod: "pin" | "password" | "webauthn" = "pin";
+    if (data.pin) {
+      if (!employee.pin_hash || !verifyPin(data.pin, employee.pin_hash))
+        return { ok: false as const, error: "PIN incorrecto" };
+      authMethod = "pin";
+    } else if (data.password) {
+      if (!employee.password_hash || !(await verifyPassword(data.password, employee.password_hash)))
+        return { ok: false as const, error: "Contraseña incorrecta" };
+      authMethod = "password";
+    } else if (data.webauthnResponse) {
+      const { data: ch } = await supabaseAdmin
+        .from("webauthn_challenges")
+        .select("id, challenge, expires_at")
+        .eq("employee_id", employee.id).eq("purpose", "auth")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (!ch) return { ok: false as const, error: "Sin reto activo de huella" };
+      if (new Date(ch.expires_at).getTime() < Date.now())
+        return { ok: false as const, error: "El reto de huella expiró" };
+      const credId = data.webauthnResponse?.id as string | undefined;
+      if (!credId) return { ok: false as const, error: "Respuesta de huella inválida" };
+      const { data: cred } = await supabaseAdmin
+        .from("employee_credentials")
+        .select("id, credential_id, public_key, counter")
+        .eq("employee_id", employee.id).eq("credential_id", credId).maybeSingle();
+      if (!cred) return { ok: false as const, error: "Huella no reconocida" };
+      try {
+        const req = getRequest();
+        const url = new URL(req.url);
+        const result = await verifyAuthenticationResponse({
+          response: data.webauthnResponse,
+          expectedChallenge: ch.challenge,
+          expectedOrigin: url.origin,
+          expectedRPID: url.hostname,
+          credential: {
+            id: cred.credential_id,
+            publicKey: new Uint8Array(Buffer.from(cred.public_key, "base64")),
+            counter: Number(cred.counter),
+          },
+        });
+        if (!result.verified) return { ok: false as const, error: "Huella no verificada" };
+        await supabaseAdmin.from("employee_credentials")
+          .update({ counter: result.authenticationInfo.newCounter, last_used_at: new Date().toISOString() })
+          .eq("id", cred.id);
+        await supabaseAdmin.from("webauthn_challenges").delete().eq("id", ch.id);
+      } catch (e) {
+        return { ok: false as const, error: e instanceof Error ? e.message : "Error verificando huella" };
+      }
+      authMethod = "webauthn";
+    }
+
+    // 3) Validate geofence (soft if store has no coords or client has no GPS)
+    let locationValid = false;
+    let distanceM: number | null = null;
+    if (store.latitude != null && store.longitude != null && data.latitude != null && data.longitude != null) {
+      distanceM = haversineMeters(store.latitude, store.longitude, data.latitude, data.longitude);
+      locationValid = distanceM <= (store.geofence_radius_m ?? 300);
+      if (!locationValid)
+        return { ok: false as const, error: `Estás a ${Math.round(distanceM)}m de la tienda. Acércate (máx ${store.geofence_radius_m}m).` };
     }
 
     // Upload selfie (data URL -> bytes)
@@ -70,6 +143,11 @@ export const markAttendance = createServerFn({ method: "POST" })
         store_id: store.id,
         selfie_url: pub.publicUrl,
         notes: data.notes ?? null,
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
+        location_accuracy_m: data.locationAccuracyM ?? null,
+        location_valid: locationValid,
+        auth_method: authMethod,
       });
     if (insErr) return { ok: false as const, error: "Error guardando marcaje" };
 
@@ -82,6 +160,8 @@ export const markAttendance = createServerFn({ method: "POST" })
       },
       type: data.type,
       timestamp: new Date().toISOString(),
+      locationValid,
+      distanceM,
     };
   });
 
@@ -102,15 +182,23 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     if (!store) return { found: false as const };
     const { data: emp } = await supabaseAdmin
       .from("employees")
-      .select("full_name, role, active, store_id")
+      .select("id, full_name, role, active, store_id, pin_hash, password_hash, username")
       .eq("employee_code", data.employeeCode)
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
     if (emp.store_id !== store.id) return { found: false as const, wrongStore: true as const };
+    const { count: credCount } = await supabaseAdmin
+      .from("employee_credentials")
+      .select("*", { count: "exact", head: true })
+      .eq("employee_id", emp.id);
     return {
       found: true as const,
       full_name: emp.full_name,
       role: emp.role,
+      hasPin: !!emp.pin_hash,
+      hasPassword: !!emp.password_hash,
+      hasWebauthn: (credCount ?? 0) > 0,
+      username: emp.username ?? null,
     };
   });
 

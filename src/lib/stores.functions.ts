@@ -23,7 +23,7 @@ export const listStores = createServerFn({ method: "GET" })
     if (adminRow) {
       const { data, error } = await supabaseAdmin
         .from("stores")
-        .select("id, code, name, address, active, created_at")
+        .select("id, code, name, address, latitude, longitude, geofence_radius_m, active, created_at")
         .order("code", { ascending: true });
       if (error) throw new Error(error.message);
       return data ?? [];
@@ -34,7 +34,7 @@ export const listStores = createServerFn({ method: "GET" })
     if (ids.length === 0) return [];
     const { data, error } = await supabaseAdmin
       .from("stores")
-      .select("id, code, name, address, active, created_at")
+      .select("id, code, name, address, latitude, longitude, geofence_radius_m, active, created_at")
       .in("id", ids)
       .order("code", { ascending: true });
     if (error) throw new Error(error.message);
@@ -47,6 +47,9 @@ const storeInput = z.object({
   address: z.string().trim().max(255).optional().nullable(),
   terminal_pin: z.string().trim().regex(/^\d{4,8}$/, "PIN debe ser 4-8 dígitos"),
   active: z.boolean().default(true),
+  latitude: z.number().min(-90).max(90).optional().nullable(),
+  longitude: z.number().min(-180).max(180).optional().nullable(),
+  geofence_radius_m: z.number().int().min(20).max(5000).optional(),
 });
 
 export const createStore = createServerFn({ method: "POST" })
@@ -60,6 +63,9 @@ export const createStore = createServerFn({ method: "POST" })
       address: data.address || null,
       terminal_pin_hash: hashPin(data.terminal_pin),
       active: data.active,
+      latitude: data.latitude ?? null,
+      longitude: data.longitude ?? null,
+      geofence_radius_m: data.geofence_radius_m ?? 300,
     });
     if (error) throw new Error(error.message);
     return { ok: true };
@@ -105,6 +111,9 @@ export const updateStore = createServerFn({ method: "POST" })
     address: z.preprocess((v) => (v === "" ? null : v), z.string().trim().max(255).nullable().optional()),
     terminal_pin: z.preprocess((v) => (v === "" ? undefined : v), z.string().trim().regex(/^\d{4,8}$/).optional()),
     active: z.boolean().optional(),
+    latitude: z.preprocess((v) => (v === "" || v === null ? null : v), z.number().min(-90).max(90).nullable().optional()),
+    longitude: z.preprocess((v) => (v === "" || v === null ? null : v), z.number().min(-180).max(180).nullable().optional()),
+    geofence_radius_m: z.number().int().min(20).max(5000).optional(),
   }).parse(i))
   .handler(async ({ context, data }) => {
     await assertAdmin(context.userId);
@@ -113,11 +122,17 @@ export const updateStore = createServerFn({ method: "POST" })
       address?: string | null;
       active?: boolean;
       terminal_pin_hash?: string;
+      latitude?: number | null;
+      longitude?: number | null;
+      geofence_radius_m?: number;
     } = {};
     if (data.name !== undefined) patch.name = data.name;
     if (data.address !== undefined) patch.address = data.address;
     if (data.active !== undefined) patch.active = data.active;
     if (data.terminal_pin !== undefined) patch.terminal_pin_hash = hashPin(data.terminal_pin);
+    if (data.latitude !== undefined) patch.latitude = data.latitude;
+    if (data.longitude !== undefined) patch.longitude = data.longitude;
+    if (data.geofence_radius_m !== undefined) patch.geofence_radius_m = data.geofence_radius_m;
     const { error } = await supabaseAdmin.from("stores").update(patch).eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
