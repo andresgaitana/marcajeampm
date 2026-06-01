@@ -16,6 +16,13 @@ import {
   deleteStore,
   bulkCreateStores,
 } from "@/lib/stores.functions";
+import {
+  beginWebauthnRegistration,
+  finishWebauthnRegistration,
+  listEmployeeCredentials,
+  deleteEmployeeCredential,
+} from "@/lib/webauthn.functions";
+import { startRegistration } from "@simplewebauthn/browser";
 import { getDashboardMetrics, getEmployeeSummary } from "@/lib/dashboard.functions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -47,7 +54,7 @@ import {
 } from "@/components/ui/table";
 import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
-  LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles,
+  LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -248,6 +255,8 @@ function EmployeesPanel() {
     role: "cajero" as EmployeeRole,
     store_id: "",
     pin: "",
+    username: "",
+    password: "",
     active: true,
   });
 
@@ -259,6 +268,8 @@ function EmployeesPanel() {
         role: editing.role as EmployeeRole,
         store_id: editing.store_id ?? "",
         pin: "",
+        username: (editing as { username?: string | null }).username ?? "",
+        password: "",
         active: editing.active,
       });
     } else {
@@ -268,6 +279,8 @@ function EmployeesPanel() {
         role: "cajero",
         store_id: storeList[0]?.id ?? "",
         pin: "",
+        username: "",
+        password: "",
         active: true,
       });
     }
@@ -288,6 +301,8 @@ function EmployeesPanel() {
             store_id: form.store_id,
             active: form.active,
             ...(form.pin ? { pin: form.pin } : {}),
+            ...(form.username !== ((editing as { username?: string | null }).username ?? "") ? { username: form.username || null } : {}),
+            ...(form.password ? { password: form.password } : {}),
           },
         });
         toast.success("Colaborador actualizado");
@@ -299,6 +314,8 @@ function EmployeesPanel() {
             role: form.role,
             store_id: form.store_id,
             pin: form.pin,
+            username: form.username || undefined,
+            password: form.password || undefined,
             active: form.active,
           },
         });
@@ -395,6 +412,26 @@ function EmployeesPanel() {
                   placeholder={editing ? "••••" : "Ej. 1234"}
                 />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Usuario (opcional)</Label>
+                  <Input
+                    value={form.username}
+                    onChange={(e) => setForm({ ...form, username: e.target.value })}
+                    placeholder="ej. jperez"
+                  />
+                </div>
+                <div>
+                  <Label>{editing ? "Nueva contraseña" : "Contraseña"}</Label>
+                  <Input
+                    type="password"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    placeholder="6+ caracteres"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">Define PIN, o usuario+contraseña, o ambos. La huella se registra después con el botón <span className="inline-flex items-center gap-1"><Fingerprint className="h-3 w-3" /></span> en la lista.</p>
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -452,6 +489,7 @@ function EmployeesPanel() {
                   )}
                 </TableCell>
                 <TableCell className="text-right">
+                  <FingerprintButton employeeId={e.id} employeeName={e.full_name} />
                   <Button variant="ghost" size="sm" onClick={() => { setEditing(e); setOpen(true); }}>
                     <Pencil className="h-4 w-4" />
                   </Button>
@@ -667,6 +705,7 @@ function StoresPanel() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [editing, setEditing] = useState<(typeof stores)[number] | null>(null);
   const [form, setForm] = useState({ code: "", name: "", address: "", terminal_pin: "", active: true });
+  const [geoForm, setGeoForm] = useState({ latitude: "", longitude: "", radius: "300" });
 
   useEffect(() => {
     if (editing) {
@@ -677,13 +716,27 @@ function StoresPanel() {
         terminal_pin: "",
         active: editing.active,
       });
+      const e = editing as { latitude?: number | null; longitude?: number | null; geofence_radius_m?: number | null };
+      setGeoForm({
+        latitude: e.latitude != null ? String(e.latitude) : "",
+        longitude: e.longitude != null ? String(e.longitude) : "",
+        radius: e.geofence_radius_m != null ? String(e.geofence_radius_m) : "300",
+      });
     } else {
       setForm({ code: "", name: "", address: "", terminal_pin: "", active: true });
+      setGeoForm({ latitude: "", longitude: "", radius: "300" });
     }
   }, [editing, open]);
 
   const save = async () => {
     try {
+      const lat = geoForm.latitude.trim() === "" ? null : Number(geoForm.latitude);
+      const lng = geoForm.longitude.trim() === "" ? null : Number(geoForm.longitude);
+      const radius = Number(geoForm.radius) || 300;
+      if ((lat !== null && Number.isNaN(lat)) || (lng !== null && Number.isNaN(lng))) {
+        toast.error("Latitud/longitud inválida");
+        return;
+      }
       if (editing) {
         await updateFn({
           data: {
@@ -691,6 +744,9 @@ function StoresPanel() {
             name: form.name,
             address: form.address || null,
             active: form.active,
+            latitude: lat,
+            longitude: lng,
+            geofence_radius_m: radius,
             ...(form.terminal_pin ? { terminal_pin: form.terminal_pin } : {}),
           },
         });
@@ -707,6 +763,9 @@ function StoresPanel() {
             address: form.address || null,
             terminal_pin: form.terminal_pin,
             active: form.active,
+            latitude: lat,
+            longitude: lng,
+            geofence_radius_m: radius,
           },
         });
         toast.success("Tienda creada");
@@ -789,6 +848,27 @@ function StoresPanel() {
                 <div>
                   <Label>Dirección (opcional)</Label>
                   <Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+                </div>
+                <div className="border-t border-border pt-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <MapPin className="h-4 w-4 text-accent" />
+                    <Label className="m-0">Geolocalización (opcional)</Label>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <Label className="text-xs">Latitud</Label>
+                      <Input value={geoForm.latitude} onChange={(e) => setGeoForm({ ...geoForm, latitude: e.target.value })} placeholder="19.4326" />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Longitud</Label>
+                      <Input value={geoForm.longitude} onChange={(e) => setGeoForm({ ...geoForm, longitude: e.target.value })} placeholder="-99.1332" />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Radio (m)</Label>
+                      <Input value={geoForm.radius} onChange={(e) => setGeoForm({ ...geoForm, radius: e.target.value.replace(/\D/g, "") })} placeholder="300" />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Saca lat/lng de Google Maps (clic derecho → copiar). Sin coords, no se valida ubicación.</p>
                 </div>
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
