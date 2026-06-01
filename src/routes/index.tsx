@@ -1,14 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { Clock, LogIn, LogOut, ShieldCheck, UserCircle2, Loader2, CheckCircle2, Store, Settings2 } from "lucide-react";
+import { Clock, LogIn, LogOut, ShieldCheck, UserCircle2, Loader2, CheckCircle2, Store, Settings2, Fingerprint, KeyRound, Lock, MapPin, MapPinOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PinPad } from "@/components/PinPad";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { lookupEmployee, markAttendance, validateTerminal } from "@/lib/attendance.functions";
+import { beginWebauthnAuth } from "@/lib/webauthn.functions";
 import { useTerminalStore } from "@/hooks/useTerminalStore";
+import { startAuthentication } from "@simplewebauthn/browser";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
@@ -23,34 +25,65 @@ export const Route = createFileRoute("/")({
   component: MarcajePage,
 });
 
-type Step = "code" | "type" | "pin" | "selfie" | "confirming" | "done";
+type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "done";
 type AttType = "entrada" | "salida";
+type AuthMethod = "pin" | "password" | "webauthn";
+type GeoState = { lat: number; lng: number; accuracy: number } | null;
 
 function MarcajePage() {
   const lookup = useServerFn(lookupEmployee);
   const mark = useServerFn(markAttendance);
+  const beginAuth = useServerFn(beginWebauthnAuth);
   const { store: terminal, ready, save, clear } = useTerminalStore();
 
-  const [step, setStep] = useState<Step>("code");
+  const [step, setStep] = useState<Step>("type");
   const [code, setCode] = useState("");
   const [pin, setPin] = useState("");
+  const [password, setPassword] = useState("");
   const [type, setType] = useState<AttType | null>(null);
   const [employeeName, setEmployeeName] = useState<string | null>(null);
+  const [methods, setMethods] = useState<AuthMethod[]>([]);
+  const [method, setMethod] = useState<AuthMethod | null>(null);
+  const [webauthnResponse, setWebauthnResponse] = useState<unknown | null>(null);
   const [result, setResult] = useState<{ name: string; role: string; store: string | null; type: AttType; timestamp: string } | null>(null);
   const [now, setNow] = useState(new Date());
   const [loading, setLoading] = useState(false);
+  const [geo, setGeo] = useState<GeoState>(null);
+  const [geoDenied, setGeoDenied] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
+  // Capture geolocation on mount (and refresh every 60s)
+  useEffect(() => {
+    if (!terminal || typeof navigator === "undefined" || !navigator.geolocation) return;
+    const get = () => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setGeo({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+          setGeoDenied(false);
+        },
+        () => setGeoDenied(true),
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
+      );
+    };
+    get();
+    const t = setInterval(get, 60000);
+    return () => clearInterval(t);
+  }, [terminal]);
+
   const reset = () => {
     setStep("type");
     setCode("");
     setPin("");
+    setPassword("");
     setType(null);
     setEmployeeName(null);
+    setMethods([]);
+    setMethod(null);
+    setWebauthnResponse(null);
     setResult(null);
   };
 
@@ -69,7 +102,22 @@ function MarcajePage() {
         return;
       }
       setEmployeeName(res.full_name);
-      setStep("pin");
+      const m: AuthMethod[] = [];
+      if (res.hasWebauthn) m.push("webauthn");
+      if (res.hasPassword) m.push("password");
+      if (res.hasPin) m.push("pin");
+      if (m.length === 0) {
+        toast.error("Este colaborador no tiene método de autenticación configurado");
+        return;
+      }
+      setMethods(m);
+      if (m.length === 1) {
+        setMethod(m[0]);
+        if (m[0] === "webauthn") void startWebauthn();
+        else setStep(m[0]);
+      } else {
+        setStep("method");
+      }
     } catch {
       toast.error("Error al validar el código");
     } finally {
@@ -82,9 +130,42 @@ function MarcajePage() {
     setStep("code");
   };
 
+  const chooseMethod = (m: AuthMethod) => {
+    setMethod(m);
+    if (m === "webauthn") void startWebauthn();
+    else setStep(m);
+  };
+
+  const startWebauthn = async () => {
+    if (!terminal) return;
+    setStep("webauthn");
+    try {
+      const res = await beginAuth({ data: { employeeCode: code, storeCode: terminal.code } });
+      if (!res.ok) {
+        toast.error(res.error);
+        setStep("method");
+        return;
+      }
+      const assertion = await startAuthentication({ optionsJSON: res.options });
+      setWebauthnResponse(assertion);
+      setStep("selfie");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Cancelado o no soportado");
+      setStep(methods.length > 1 ? "method" : "code");
+    }
+  };
+
   const submitPin = () => {
     if (pin.length < 4) {
       toast.error("El PIN debe tener al menos 4 dígitos");
+      return;
+    }
+    setStep("selfie");
+  };
+
+  const submitPassword = () => {
+    if (password.length < 6) {
+      toast.error("La contraseña debe tener al menos 6 caracteres");
       return;
     }
     setStep("selfie");
@@ -94,20 +175,28 @@ function MarcajePage() {
     if (!type || !terminal) return;
     setStep("confirming");
     try {
-      const res = await mark({
-        data: {
-          employeeCode: code,
-          pin,
-          type,
-          selfieDataUrl: dataUrl,
-          storeCode: terminal.code,
-          terminalPin: terminal.pin,
-        },
-      });
+      const payload: Record<string, unknown> = {
+        employeeCode: code,
+        type,
+        selfieDataUrl: dataUrl,
+        storeCode: terminal.code,
+        terminalPin: terminal.pin,
+      };
+      if (method === "pin") payload.pin = pin;
+      else if (method === "password") payload.password = password;
+      else if (method === "webauthn") payload.webauthnResponse = webauthnResponse;
+      if (geo) {
+        payload.latitude = geo.lat;
+        payload.longitude = geo.lng;
+        payload.locationAccuracyM = geo.accuracy;
+      }
+      const res = await mark({ data: payload as Parameters<typeof mark>[0]["data"] });
       if (!res.ok) {
         toast.error(res.error);
         setPin("");
-        setStep("pin");
+        setPassword("");
+        setWebauthnResponse(null);
+        setStep(method ?? "method");
         return;
       }
       setResult({
@@ -121,14 +210,9 @@ function MarcajePage() {
       setTimeout(reset, 6000);
     } catch {
       toast.error("Error al registrar el marcaje");
-      setStep("pin");
+      setStep(method ?? "method");
     }
   };
-
-  // Set initial step when terminal is ready
-  useEffect(() => {
-    if (ready && terminal && step === "code" && !type) setStep("type");
-  }, [ready, terminal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!ready) {
     return (
@@ -193,6 +277,17 @@ function MarcajePage() {
         </div>
       )}
 
+      {/* GPS status banner */}
+      <div className={`px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 ${geo ? "bg-success/10 text-success" : "bg-amber-500/10 text-amber-700"}`}>
+        {geo ? (
+          <><MapPin className="h-3 w-3" /> Ubicación detectada (±{Math.round(geo.accuracy)}m)</>
+        ) : geoDenied ? (
+          <><MapPinOff className="h-3 w-3" /> Sin permiso de GPS — el marcaje quedará "sin ubicación"</>
+        ) : (
+          <><MapPin className="h-3 w-3 animate-pulse" /> Detectando ubicación…</>
+        )}
+      </div>
+
       <main className="flex-1 flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-card rounded-3xl shadow-[var(--shadow-soft)] border border-border p-6 md:p-8">
           {step === "type" && (
@@ -250,6 +345,45 @@ function MarcajePage() {
             </>
           )}
 
+          {step === "method" && (
+            <>
+              <div className="text-center mb-6">
+                <p className="text-sm text-muted-foreground">{employeeName}</p>
+                <h2 className="text-xl font-bold text-foreground mt-1">¿Cómo quieres autenticarte?</h2>
+              </div>
+              <div className="space-y-3">
+                {methods.includes("webauthn") && (
+                  <button onClick={() => chooseMethod("webauthn")} className="w-full h-20 rounded-2xl bg-primary text-primary-foreground flex items-center gap-4 px-5 active:scale-95 transition-transform">
+                    <Fingerprint className="h-9 w-9" />
+                    <div className="text-left">
+                      <div className="font-bold text-lg">Huella</div>
+                      <div className="text-xs opacity-80">Más rápido y seguro</div>
+                    </div>
+                  </button>
+                )}
+                {methods.includes("password") && (
+                  <button onClick={() => chooseMethod("password")} className="w-full h-20 rounded-2xl bg-secondary text-foreground border border-border flex items-center gap-4 px-5 active:scale-95 transition-transform">
+                    <Lock className="h-8 w-8" />
+                    <div className="text-left">
+                      <div className="font-bold text-lg">Contraseña</div>
+                      <div className="text-xs text-muted-foreground">Usuario y contraseña</div>
+                    </div>
+                  </button>
+                )}
+                {methods.includes("pin") && (
+                  <button onClick={() => chooseMethod("pin")} className="w-full h-20 rounded-2xl bg-secondary text-foreground border border-border flex items-center gap-4 px-5 active:scale-95 transition-transform">
+                    <KeyRound className="h-8 w-8" />
+                    <div className="text-left">
+                      <div className="font-bold text-lg">PIN</div>
+                      <div className="text-xs text-muted-foreground">4-8 dígitos</div>
+                    </div>
+                  </button>
+                )}
+              </div>
+              <Button variant="outline" className="w-full mt-4 h-12" onClick={reset}>Cancelar</Button>
+            </>
+          )}
+
           {step === "pin" && (
             <>
               <div className="text-center mb-6">
@@ -270,6 +404,43 @@ function MarcajePage() {
                 </Button>
               </div>
             </>
+          )}
+
+          {step === "password" && (
+            <>
+              <div className="text-center mb-6">
+                <p className="text-sm text-muted-foreground">{employeeName}</p>
+                <h2 className="text-xl font-bold text-foreground mt-1">Tu contraseña</h2>
+              </div>
+              <Input
+                type="password"
+                autoFocus
+                className="h-14 text-lg"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitPassword(); }}
+                placeholder="••••••••"
+              />
+              <div className="flex gap-3 mt-6">
+                <Button variant="outline" className="flex-1 h-14" onClick={() => setStep(methods.length > 1 ? "method" : "code")}>Atrás</Button>
+                <Button
+                  className={`flex-1 h-14 text-white ${type === "entrada" ? "bg-success hover:bg-success/90" : "bg-accent hover:bg-accent/90"}`}
+                  disabled={password.length < 6}
+                  onClick={submitPassword}
+                >
+                  Continuar
+                </Button>
+              </div>
+            </>
+          )}
+
+          {step === "webauthn" && (
+            <div className="flex flex-col items-center justify-center py-12 gap-4">
+              <Fingerprint className="h-20 w-20 text-primary animate-pulse" />
+              <p className="text-foreground font-medium">Coloca tu huella…</p>
+              <p className="text-xs text-muted-foreground text-center">Sigue las instrucciones del dispositivo</p>
+              <Button variant="outline" onClick={() => setStep(methods.length > 1 ? "method" : "code")}>Cancelar</Button>
+            </div>
           )}
 
           {step === "selfie" && (
