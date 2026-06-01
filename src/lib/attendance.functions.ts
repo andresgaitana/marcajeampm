@@ -182,7 +182,7 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     if (!store) return { found: false as const };
     const { data: emp } = await supabaseAdmin
       .from("employees")
-      .select("full_name, role, active, store_id, pin_hash, password_hash, username")
+      .select("id, full_name, role, active, store_id, pin_hash, password_hash, username")
       .eq("employee_code", data.employeeCode)
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
@@ -190,7 +190,7 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     const { count: credCount } = await supabaseAdmin
       .from("employee_credentials")
       .select("*", { count: "exact", head: true })
-      .eq("employee_id", (await supabaseAdmin.from("employees").select("id").eq("employee_code", data.employeeCode).maybeSingle()).data?.id ?? "");
+      .eq("employee_id", emp.id);
     return {
       found: true as const,
       full_name: emp.full_name,
