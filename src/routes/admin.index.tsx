@@ -1049,3 +1049,68 @@ function BulkDialog({
     </DialogContent>
   );
 }
+function FingerprintButton({ employeeId, employeeName }: { employeeId: string; employeeName: string }) {
+  const beginFn = useServerFn(beginWebauthnRegistration);
+  const finishFn = useServerFn(finishWebauthnRegistration);
+  const listFn = useServerFn(listEmployeeCredentials);
+  const deleteFn = useServerFn(deleteEmployeeCredential);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [creds, setCreds] = useState<Array<{ id: string; device_label: string | null; created_at: string; last_used_at: string | null }>>([]);
+
+  const refresh = async () => {
+    try { setCreds(await listFn({ data: { employeeId } })); } catch { /* noop */ }
+  };
+
+  useEffect(() => { if (open) void refresh(); /* eslint-disable-next-line */ }, [open]);
+
+  const register = async () => {
+    setBusy(true);
+    try {
+      const opts = await beginFn({ data: { employeeId } });
+      const att = await startRegistration({ optionsJSON: opts as Parameters<typeof startRegistration>[0]["optionsJSON"] });
+      const label = navigator.userAgent.includes("Mobile") ? "Móvil" : "Escritorio";
+      const res = await finishFn({ data: { employeeId, response: att, deviceLabel: label } });
+      if (!res.ok) toast.error(res.error);
+      else { toast.success("Huella registrada"); await refresh(); }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Cancelado o no soportado");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (id: string) => {
+    if (!confirm("¿Eliminar esta huella?")) return;
+    await deleteFn({ data: { id } });
+    await refresh();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" title="Huellas registradas"><Fingerprint className="h-4 w-4" /></Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Huellas de {employeeName}</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">Cada huella queda atada al dispositivo donde se registra. Pídele al colaborador que apoye el dedo cuando lo solicite el sistema.</p>
+        <Button onClick={register} disabled={busy} className="bg-accent text-accent-foreground hover:bg-accent/90">
+          <Fingerprint className="h-4 w-4 mr-2" /> {busy ? "Esperando…" : "Registrar huella en este dispositivo"}
+        </Button>
+        <div className="space-y-2">
+          {creds.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-3">Sin huellas registradas.</p>
+          ) : creds.map((c) => (
+            <div key={c.id} className="flex items-center justify-between bg-secondary rounded-lg px-3 py-2">
+              <div className="text-sm">
+                <div className="font-medium">{c.device_label ?? "Dispositivo"}</div>
+                <div className="text-xs text-muted-foreground">Registrada {new Date(c.created_at).toLocaleDateString("es-MX")}</div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => remove(c.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
