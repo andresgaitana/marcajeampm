@@ -65,6 +65,38 @@ export const createStore = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+/** Bulk create stores. Useful for seeding A01..A95 or support areas. */
+export const bulkCreateStores = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      items: z.array(z.object({
+        code: z.string().trim().min(1).max(32).regex(/^[A-Za-z0-9_-]+$/),
+        name: z.string().trim().min(1).max(120),
+      })).min(1).max(500),
+      terminal_pin: z.string().trim().regex(/^\d{4,8}$/),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    await assertAdmin(context.userId);
+    const pinHash = hashPin(data.terminal_pin);
+    const rows = data.items.map((it) => ({
+      code: it.code.toUpperCase(),
+      name: it.name,
+      terminal_pin_hash: pinHash,
+      active: true,
+    }));
+    // upsert by code to be idempotent
+    const { data: existing } = await supabaseAdmin
+      .from("stores").select("code").in("code", rows.map((r) => r.code));
+    const existingCodes = new Set((existing ?? []).map((r) => r.code));
+    const toInsert = rows.filter((r) => !existingCodes.has(r.code));
+    if (toInsert.length === 0) return { created: 0, skipped: rows.length };
+    const { error } = await supabaseAdmin.from("stores").insert(toInsert);
+    if (error) throw new Error(error.message);
+    return { created: toInsert.length, skipped: rows.length - toInsert.length };
+  });
+
 export const updateStore = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({
