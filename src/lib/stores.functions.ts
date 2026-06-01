@@ -101,9 +101,9 @@ export const updateStore = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({
     id: z.string().uuid(),
-    name: z.string().trim().min(1).max(120).optional(),
-    address: z.string().trim().max(255).nullable().optional(),
-    terminal_pin: z.string().trim().regex(/^\d{4,8}$/).optional(),
+    name: z.preprocess((v) => (v === "" ? undefined : v), z.string().trim().min(1).max(120).optional()),
+    address: z.preprocess((v) => (v === "" ? null : v), z.string().trim().max(255).nullable().optional()),
+    terminal_pin: z.preprocess((v) => (v === "" ? undefined : v), z.string().trim().regex(/^\d{4,8}$/).optional()),
     active: z.boolean().optional(),
   }).parse(i))
   .handler(async ({ context, data }) => {
