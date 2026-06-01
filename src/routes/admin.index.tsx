@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,7 +9,14 @@ import {
   updateEmployee,
   deleteEmployee,
 } from "@/lib/admin.functions";
-import { listStores } from "@/lib/stores.functions";
+import {
+  listStores,
+  createStore,
+  updateStore,
+  deleteStore,
+  bulkCreateStores,
+} from "@/lib/stores.functions";
+import { getDashboardMetrics, getEmployeeSummary } from "@/lib/dashboard.functions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,7 +45,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History } from "lucide-react";
+import {
+  Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
+  LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/admin/")({
@@ -49,8 +59,12 @@ type EmployeeRole = "cajero" | "gerente" | "seguridad";
 
 function AdminDashboard() {
   return (
-    <Tabs defaultValue="attendance" className="space-y-4">
+    <Tabs defaultValue="dashboard" className="space-y-4">
       <TabsList className="bg-card border border-border">
+        <TabsTrigger value="dashboard" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <LayoutDashboard className="h-4 w-4 mr-2" />
+          Dashboard
+        </TabsTrigger>
         <TabsTrigger value="attendance" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <History className="h-4 w-4 mr-2" />
           Marcajes
@@ -59,12 +73,22 @@ function AdminDashboard() {
           <Users className="h-4 w-4 mr-2" />
           Colaboradores
         </TabsTrigger>
+        <TabsTrigger value="stores" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <StoreIcon className="h-4 w-4 mr-2" />
+          Tiendas
+        </TabsTrigger>
       </TabsList>
+      <TabsContent value="dashboard">
+        <DashboardPanel />
+      </TabsContent>
       <TabsContent value="attendance">
         <AttendancePanel />
       </TabsContent>
       <TabsContent value="employees">
         <EmployeesPanel />
+      </TabsContent>
+      <TabsContent value="stores">
+        <StoresPanel />
       </TabsContent>
     </Tabs>
   );
