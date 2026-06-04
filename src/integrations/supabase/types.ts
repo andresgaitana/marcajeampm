@@ -118,6 +118,42 @@ export type Database = {
           },
         ]
       }
+      employee_store_assignments: {
+        Row: {
+          created_at: string
+          employee_id: string
+          id: string
+          store_id: string
+        }
+        Insert: {
+          created_at?: string
+          employee_id: string
+          id?: string
+          store_id: string
+        }
+        Update: {
+          created_at?: string
+          employee_id?: string
+          id?: string
+          store_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "employee_store_assignments_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "employee_store_assignments_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       employees: {
         Row: {
           active: boolean
@@ -319,7 +355,12 @@ export type Database = {
       app_role: "admin"
       attendance_type: "entrada" | "salida"
       auth_method: "pin" | "password" | "webauthn"
-      employee_role: "cajero" | "gerente" | "seguridad"
+      employee_role:
+        | "cajero"
+        | "gerente"
+        | "seguridad"
+        | "agente_mbk"
+        | "gerente_zona"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -450,7 +491,13 @@ export const Constants = {
       app_role: ["admin"],
       attendance_type: ["entrada", "salida"],
       auth_method: ["pin", "password", "webauthn"],
-      employee_role: ["cajero", "gerente", "seguridad"],
+      employee_role: [
+        "cajero",
+        "gerente",
+        "seguridad",
+        "agente_mbk",
+        "gerente_zona",
+      ],
     },
   },
 } as const
