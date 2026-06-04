@@ -197,7 +197,17 @@ export const lookupEmployee = createServerFn({ method: "POST" })
       .eq("employee_code", data.employeeCode)
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
-    if (emp.store_id !== store.id) return { found: false as const, wrongStore: true as const };
+    if (emp.role === "gerente_zona") {
+      const { data: assign } = await supabaseAdmin
+        .from("employee_store_assignments")
+        .select("id")
+        .eq("employee_id", emp.id)
+        .eq("store_id", store.id)
+        .maybeSingle();
+      if (!assign) return { found: false as const, wrongStore: true as const };
+    } else if (emp.store_id !== store.id) {
+      return { found: false as const, wrongStore: true as const };
+    }
     const { count: credCount } = await supabaseAdmin
       .from("employee_credentials")
       .select("*", { count: "exact", head: true })
