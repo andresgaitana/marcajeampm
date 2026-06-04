@@ -8,6 +8,8 @@ import {
   createEmployee,
   updateEmployee,
   deleteEmployee,
+  listEmployeeAssignments,
+  setEmployeeAssignments,
 } from "@/lib/admin.functions";
 import {
   listStores,
@@ -62,7 +64,15 @@ export const Route = createFileRoute("/admin/")({
   component: AdminDashboard,
 });
 
-type EmployeeRole = "cajero" | "gerente" | "seguridad";
+type EmployeeRole = "cajero" | "gerente" | "seguridad" | "agente_mbk" | "gerente_zona";
+
+const ROLE_LABELS: Record<EmployeeRole, string> = {
+  cajero: "Cajero",
+  agente_mbk: "Agente MBK",
+  gerente: "Gerente",
+  gerente_zona: "Gerente de Zona",
+  seguridad: "Seguridad",
+};
 
 function AdminDashboard() {
   return (
