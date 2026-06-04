@@ -83,7 +83,7 @@ export const listEmployees = createServerFn({ method: "GET" })
 const employeeInput = z.object({
   employee_code: z.string().trim().min(1).max(32).regex(/^[a-zA-Z0-9_-]+$/),
   full_name: z.string().trim().min(1).max(120),
-  role: z.enum(["cajero", "gerente", "seguridad"]),
+  role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona"]),
   store_id: z.string().uuid(),
   pin: z.string().trim().regex(/^\d{4,8}$/, "PIN debe ser 4-8 dígitos"),
   active: z.boolean().default(true),
@@ -115,7 +115,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       .object({
         id: z.string().uuid(),
         full_name: z.string().trim().min(1).max(120).optional(),
-        role: z.enum(["cajero", "gerente", "seguridad"]).optional(),
+        role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona"]).optional(),
         store_id: z.string().uuid().optional(),
         active: z.boolean().optional(),
         pin: z.string().trim().regex(/^\d{4,8}$/).optional(),
@@ -134,7 +134,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       throw new Error("No puedes mover el colaborador a esa tienda");
     const patch: {
       full_name?: string;
-      role?: "cajero" | "gerente" | "seguridad";
+      role?: "cajero" | "gerente" | "seguridad" | "agente_mbk" | "gerente_zona";
       store_id?: string;
       active?: boolean;
       pin_hash?: string;
