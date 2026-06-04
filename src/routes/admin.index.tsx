@@ -497,7 +497,7 @@ function EmployeesPanel() {
               <TableRow key={e.id}>
                 <TableCell className="font-mono text-foreground">{e.employee_code}</TableCell>
                 <TableCell className="font-medium text-foreground">{e.full_name}</TableCell>
-                <TableCell className="capitalize text-muted-foreground">{e.role}</TableCell>
+                <TableCell className="text-muted-foreground">{ROLE_LABELS[e.role as EmployeeRole] ?? e.role}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {(() => {
                     const s = storeList.find((x) => x.id === e.store_id);
@@ -532,6 +532,71 @@ function EmployeesPanel() {
 // =====================================================================
 // DASHBOARD
 // =====================================================================
+function ZoneAssignmentsEditor({
+  employeeId,
+  stores,
+}: {
+  employeeId: string;
+  stores: { id: string; code: string; name: string }[];
+}) {
+  const listFn = useServerFn(listEmployeeAssignments);
+  const setFn = useServerFn(setEmployeeAssignments);
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["empAssignments", employeeId],
+    queryFn: () => listFn({ data: { employee_id: employeeId } }),
+  });
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (data && selected === null) {
+      setSelected(new Set(data.map((r) => r.store_id)));
+    }
+  }, [data, selected]);
+
+  const toggle = (id: string) => {
+    const next = new Set(selected ?? []);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+  };
+
+  const save = async () => {
+    try {
+      await setFn({ data: { employee_id: employeeId, store_ids: Array.from(selected ?? []) } });
+      toast.success("Tiendas asignadas actualizadas");
+      qc.invalidateQueries({ queryKey: ["empAssignments", employeeId] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error al asignar tiendas");
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-border p-3 bg-secondary/40 space-y-2">
+      <div className="flex items-center justify-between">
+        <Label className="text-sm">Tiendas que supervisa</Label>
+        <Button size="sm" variant="outline" onClick={save} disabled={isLoading || selected === null}>
+          Guardar asignaciones
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        El Gerente de Zona podrá marcar entrada/salida en cualquiera de las tiendas seleccionadas.
+      </p>
+      <div className="max-h-40 overflow-y-auto grid grid-cols-1 gap-1">
+        {stores.map((s) => {
+          const checked = selected?.has(s.id) ?? false;
+          return (
+            <label key={s.id} className="flex items-center gap-2 text-sm py-1">
+              <input type="checkbox" checked={checked} onChange={() => toggle(s.id)} />
+              <span className="font-mono text-xs text-muted-foreground">{s.code}</span>
+              <span className="text-foreground">{s.name}</span>
+            </label>
+          );
+        })}
+        {stores.length === 0 && <p className="text-xs text-muted-foreground">No hay tiendas registradas.</p>}
+      </div>
+    </div>
+  );
+}
+
 function DashboardPanel() {
   const metricsFn = useServerFn(getDashboardMetrics);
   const summaryFn = useServerFn(getEmployeeSummary);
