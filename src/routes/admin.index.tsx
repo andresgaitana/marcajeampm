@@ -391,13 +391,15 @@ function EmployeesPanel() {
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="cajero">Cajero</SelectItem>
+                      <SelectItem value="agente_mbk">Agente MBK</SelectItem>
                       <SelectItem value="gerente">Gerente</SelectItem>
+                      <SelectItem value="gerente_zona">Gerente de Zona</SelectItem>
                       <SelectItem value="seguridad">Seguridad</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label>Tienda</Label>
+                  <Label>{form.role === "gerente_zona" ? "Tienda base (inicial)" : "Tienda"}</Label>
                   <Select value={form.store_id} onValueChange={(v) => setForm({ ...form, store_id: v })}>
                     <SelectTrigger><SelectValue placeholder="Selecciona…" /></SelectTrigger>
                     <SelectContent>
@@ -410,6 +412,17 @@ function EmployeesPanel() {
                   </Select>
                 </div>
               </div>
+              {form.role === "gerente_zona" && editing && (
+                <ZoneAssignmentsEditor
+                  employeeId={editing.id}
+                  stores={storeList.map((s) => ({ id: s.id, code: s.code, name: s.name }))}
+                />
+              )}
+              {form.role === "gerente_zona" && !editing && (
+                <p className="text-xs text-muted-foreground bg-secondary/60 rounded-lg p-2">
+                  Crea primero al Gerente de Zona y luego edítalo para asignarle las tiendas que supervisará.
+                </p>
+              )}
               <div>
                 <Label>{editing ? "PIN nuevo (dejar vacío para mantener)" : "PIN (4-8 dígitos)"}</Label>
                 <Input
