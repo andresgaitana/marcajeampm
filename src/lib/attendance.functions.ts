@@ -50,8 +50,19 @@ export const markAttendance = createServerFn({ method: "POST" })
     if (empErr) throw new Error("Error consultando colaborador");
     if (!employee) return { ok: false as const, error: "Código no encontrado" };
     if (!employee.active) return { ok: false as const, error: "Colaborador inactivo" };
-    if (employee.store_id !== store.id)
+    // Zone managers can clock in at any store assigned to them
+    if (employee.role === "gerente_zona") {
+      const { data: assign } = await supabaseAdmin
+        .from("employee_store_assignments")
+        .select("id")
+        .eq("employee_id", employee.id)
+        .eq("store_id", store.id)
+        .maybeSingle();
+      if (!assign)
+        return { ok: false as const, error: `${store.name} no está asignada a este gerente de zona` };
+    } else if (employee.store_id !== store.id) {
       return { ok: false as const, error: `Este colaborador no pertenece a ${store.name}` };
+    }
 
     // 2) Validate authentication: exactly one method
     const provided = [data.pin, data.password, data.webauthnResponse].filter(Boolean).length;
@@ -186,7 +197,17 @@ export const lookupEmployee = createServerFn({ method: "POST" })
       .eq("employee_code", data.employeeCode)
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
-    if (emp.store_id !== store.id) return { found: false as const, wrongStore: true as const };
+    if (emp.role === "gerente_zona") {
+      const { data: assign } = await supabaseAdmin
+        .from("employee_store_assignments")
+        .select("id")
+        .eq("employee_id", emp.id)
+        .eq("store_id", store.id)
+        .maybeSingle();
+      if (!assign) return { found: false as const, wrongStore: true as const };
+    } else if (emp.store_id !== store.id) {
+      return { found: false as const, wrongStore: true as const };
+    }
     const { count: credCount } = await supabaseAdmin
       .from("employee_credentials")
       .select("*", { count: "exact", head: true })
