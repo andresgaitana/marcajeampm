@@ -185,3 +185,46 @@ export const listAttendance = createServerFn({ method: "GET" })
     if (error) throw new Error(error.message);
     return rows ?? [];
   });
+
+/** List store assignments for an employee (used for Gerente de Zona). */
+export const listEmployeeAssignments = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({ employee_id: z.string().uuid() }).parse(i))
+  .handler(async ({ context, data }) => {
+    await getScope(context.userId);
+    const { data: rows, error } = await supabaseAdmin
+      .from("employee_store_assignments")
+      .select("store_id, stores(code, name)")
+      .eq("employee_id", data.employee_id);
+    if (error) throw new Error(error.message);
+    return rows ?? [];
+  });
+
+/** Replace the set of stores assigned to an employee. */
+export const setEmployeeAssignments = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      employee_id: z.string().uuid(),
+      store_ids: z.array(z.string().uuid()).max(200),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    if (scope.storeIds !== "all") {
+      const allowed = new Set(scope.storeIds);
+      for (const id of data.store_ids)
+        if (!allowed.has(id)) throw new Error("No puedes asignar tiendas fuera de tu alcance");
+    }
+    const { error: delErr } = await supabaseAdmin
+      .from("employee_store_assignments")
+      .delete()
+      .eq("employee_id", data.employee_id);
+    if (delErr) throw new Error(delErr.message);
+    if (data.store_ids.length > 0) {
+      const rows = data.store_ids.map((store_id) => ({ employee_id: data.employee_id, store_id }));
+      const { error: insErr } = await supabaseAdmin.from("employee_store_assignments").insert(rows);
+      if (insErr) throw new Error(insErr.message);
+    }
+    return { ok: true };
+  });
