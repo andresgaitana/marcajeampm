@@ -249,6 +249,7 @@ export type Database = {
           name: string
           terminal_pin_hash: string
           updated_at: string
+          zone_id: string | null
         }
         Insert: {
           active?: boolean
@@ -262,6 +263,7 @@ export type Database = {
           name: string
           terminal_pin_hash: string
           updated_at?: string
+          zone_id?: string | null
         }
         Update: {
           active?: boolean
@@ -275,8 +277,17 @@ export type Database = {
           name?: string
           terminal_pin_hash?: string
           updated_at?: string
+          zone_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "stores_zone_id_fkey"
+            columns: ["zone_id"]
+            isOneToOne: false
+            referencedRelation: "zones"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       user_roles: {
         Row: {
@@ -298,6 +309,35 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      user_zone_assignments: {
+        Row: {
+          created_at: string
+          id: string
+          user_id: string
+          zone_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          user_id: string
+          zone_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          user_id?: string
+          zone_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_zone_assignments_zone_id_fkey"
+            columns: ["zone_id"]
+            isOneToOne: false
+            referencedRelation: "zones"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       webauthn_challenges: {
         Row: {
@@ -334,11 +374,44 @@ export type Database = {
           },
         ]
       }
+      zones: {
+        Row: {
+          active: boolean
+          code: string
+          created_at: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          code: string
+          created_at?: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          code?: string
+          created_at?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
+      accessible_store_ids: {
+        Args: { _user_id: string }
+        Returns: {
+          store_id: string
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -350,9 +423,17 @@ export type Database = {
         Args: { _store_id: string; _user_id: string }
         Returns: boolean
       }
+      is_zone_user: {
+        Args: { _user_id: string; _zone_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
-      app_role: "admin"
+      app_role:
+        | "admin"
+        | "gerente_tienda"
+        | "gerente_zona"
+        | "gerente_operaciones"
       attendance_type: "entrada" | "salida"
       auth_method: "pin" | "password" | "webauthn"
       employee_role:
@@ -488,7 +569,12 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      app_role: ["admin"],
+      app_role: [
+        "admin",
+        "gerente_tienda",
+        "gerente_zona",
+        "gerente_operaciones",
+      ],
       attendance_type: ["entrada", "salida"],
       auth_method: ["pin", "password", "webauthn"],
       employee_role: [

@@ -32,7 +32,7 @@ function AdminLayout() {
       try {
         const r = await check();
         if (!mounted) return;
-        setState(r.isAdmin ? "ready" : "denied");
+        setState(r.hasAccess ? "ready" : "denied");
       } catch {
         if (mounted) setState("denied");
       }

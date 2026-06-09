@@ -4,50 +4,72 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { hashPin } from "./pin.server";
 
-async function assertAdmin(userId: string) {
-  const { data, error } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  if (error) throw new Error("No se pudo verificar el rol");
-  if (!data) throw new Error("Acceso denegado: se requiere rol de administrador");
-}
-
-async function getManagerStoreIds(userId: string): Promise<string[]> {
-  const { data, error } = await supabaseAdmin
-    .from("store_managers")
-    .select("store_id")
-    .eq("user_id", userId);
-  if (error) throw new Error("No se pudieron cargar tiendas asignadas");
-  return (data ?? []).map((r) => r.store_id);
-}
-
-async function isAdmin(userId: string) {
+/** Returns the set of roles the user has from public.user_roles. */
+export async function getUserRoles(userId: string): Promise<string[]> {
   const { data } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  return !!data;
+    .from("user_roles").select("role").eq("user_id", userId);
+  return (data ?? []).map((r) => r.role as string);
 }
 
-/** Returns access scope for current user: admin (all stores) or manager (subset). */
-async function getScope(userId: string): Promise<{ isAdmin: boolean; storeIds: string[] | "all" }> {
-  if (await isAdmin(userId)) return { isAdmin: true, storeIds: "all" };
-  const ids = await getManagerStoreIds(userId);
-  if (ids.length === 0) throw new Error("Acceso denegado: tu cuenta no tiene tiendas asignadas");
-  return { isAdmin: false, storeIds: ids };
+export async function getAccessibleStoreIds(userId: string): Promise<string[]> {
+  const { data, error } = await supabaseAdmin.rpc("accessible_store_ids", { _user_id: userId });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((r: { store_id: string }) => r.store_id);
+}
+
+export type AccessScope = {
+  isAdmin: boolean;
+  isOperations: boolean;
+  isZoneAdmin: boolean;
+  isStoreAdmin: boolean;
+  storeIds: string[] | "all";
+};
+
+/** Returns access scope for current user. Throws if no admin-level access. */
+export async function getScope(userId: string): Promise<AccessScope> {
+  const roles = await getUserRoles(userId);
+  const isAdmin = roles.includes("admin");
+  const isOperations = roles.includes("gerente_operaciones");
+  const isZoneAdmin = roles.includes("gerente_zona");
+  const isStoreAdmin = roles.includes("gerente_tienda");
+  // Backward-compat: a user with only store_managers rows still gets access.
+  const ids = await getAccessibleStoreIds(userId);
+  if (isAdmin || isOperations) return { isAdmin, isOperations, isZoneAdmin, isStoreAdmin, storeIds: "all" };
+  if (ids.length === 0)
+    throw new Error("Acceso denegado: tu cuenta no tiene tiendas asignadas");
+  return { isAdmin, isOperations, isZoneAdmin, isStoreAdmin, storeIds: ids };
+}
+
+async function assertAdminOrOps(userId: string) {
+  const roles = await getUserRoles(userId);
+  if (!roles.includes("admin") && !roles.includes("gerente_operaciones"))
+    throw new Error("Acceso denegado: solo Admin/Gerente de Operaciones");
+}
+
+async function assertSuperAdmin(userId: string) {
+  const roles = await getUserRoles(userId);
+  if (!roles.includes("admin")) throw new Error("Acceso denegado: solo Administrador");
 }
 
 export const checkAdmin = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const admin = await isAdmin(context.userId);
-    const storeIds = admin ? [] : await getManagerStoreIds(context.userId);
-    return { isAdmin: admin, isManager: !admin && storeIds.length > 0, storeIds };
+    const roles = await getUserRoles(context.userId);
+    const isAdmin = roles.includes("admin");
+    const isOperations = roles.includes("gerente_operaciones");
+    const isZoneAdmin = roles.includes("gerente_zona");
+    const isStoreAdmin = roles.includes("gerente_tienda");
+    const ids = await getAccessibleStoreIds(context.userId);
+    return {
+      isAdmin,
+      isOperations,
+      isZoneAdmin,
+      isStoreAdmin,
+      // Backward compatibility for older callers
+      isManager: !isAdmin && !isOperations && ids.length > 0,
+      hasAccess: isAdmin || isOperations || ids.length > 0,
+      storeIds: isAdmin || isOperations ? [] : ids,
+    };
   });
 
 /** First-time bootstrap: if no admin exists, current user becomes admin. */
@@ -105,6 +127,178 @@ export const createEmployee = createServerFn({ method: "POST" })
       active: data.active,
     });
     if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// =====================================================================
+// Admin Users (Operations and Zone managers) management
+// =====================================================================
+
+/** List users with admin-level roles (admin, operations, zone, store). */
+export const listAdminUsers = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertAdminOrOps(context.userId);
+    const { data: roles } = await supabaseAdmin
+      .from("user_roles")
+      .select("id, user_id, role, created_at");
+    const { data: zoneAssigns } = await supabaseAdmin
+      .from("user_zone_assignments")
+      .select("user_id, zone_id, zones(code, name)");
+    const { data: storeAssigns } = await supabaseAdmin
+      .from("store_managers")
+      .select("user_id, store_id, stores(code, name)");
+
+    const byUser = new Map<string, {
+      user_id: string;
+      email: string | null;
+      roles: string[];
+      zones: Array<{ id: string; code: string; name: string }>;
+      stores: Array<{ id: string; code: string; name: string }>;
+    }>();
+    const ensure = (id: string) => {
+      if (!byUser.has(id)) byUser.set(id, { user_id: id, email: null, roles: [], zones: [], stores: [] });
+      return byUser.get(id)!;
+    };
+    for (const r of roles ?? []) ensure(r.user_id).roles.push(r.role as string);
+    for (const z of zoneAssigns ?? []) {
+      const zone = (z as { zones?: { code: string; name: string } | { code: string; name: string }[] }).zones;
+      const obj = Array.isArray(zone) ? zone[0] : zone;
+      ensure(z.user_id).zones.push({ id: z.zone_id, code: obj?.code ?? "", name: obj?.name ?? "" });
+    }
+    for (const s of storeAssigns ?? []) {
+      const st = (s as { stores?: { code: string; name: string } | { code: string; name: string }[] }).stores;
+      const obj = Array.isArray(st) ? st[0] : st;
+      ensure(s.user_id).stores.push({ id: s.store_id, code: obj?.code ?? "", name: obj?.name ?? "" });
+    }
+
+    // Hydrate emails
+    const result = Array.from(byUser.values());
+    for (const u of result) {
+      const { data } = await supabaseAdmin.auth.admin.getUserById(u.user_id);
+      u.email = data?.user?.email ?? null;
+    }
+    return result.sort((a, b) => (a.email ?? "").localeCompare(b.email ?? ""));
+  });
+
+const adminUserInput = z.object({
+  email: z.string().email().max(255),
+  password: z.string().min(8).max(72).optional(),
+  role: z.enum(["admin", "gerente_operaciones", "gerente_tienda", "gerente_zona"]),
+  store_ids: z.array(z.string().uuid()).max(500).optional(),
+  zone_ids: z.array(z.string().uuid()).max(500).optional(),
+});
+
+/** Create/assign an admin user. Only admin can create other admins or operations. */
+export const upsertAdminUser = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => adminUserInput.parse(i))
+  .handler(async ({ context, data }) => {
+    const roles = await getUserRoles(context.userId);
+    const isAdmin = roles.includes("admin");
+    const isOps = roles.includes("gerente_operaciones");
+    if (!isAdmin && !isOps) throw new Error("Acceso denegado");
+    // Only admin can create admin or operations users
+    if ((data.role === "admin" || data.role === "gerente_operaciones") && !isAdmin)
+      throw new Error("Solo Administrador puede crear este rol");
+
+    // Find or create auth user by email
+    let userId: string | null = null;
+    let page = 1;
+    while (page < 10) {
+      const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
+      const found = list?.users?.find((u) => u.email?.toLowerCase() === data.email.toLowerCase());
+      if (found) { userId = found.id; break; }
+      if (!list?.users || list.users.length < 200) break;
+      page++;
+    }
+    if (!userId) {
+      if (!data.password) return { ok: false as const, error: "Usuario no existe. Define una contraseña inicial." };
+      const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
+        email: data.email, password: data.password, email_confirm: true,
+      });
+      if (error || !created.user) return { ok: false as const, error: error?.message ?? "No se pudo crear el usuario" };
+      userId = created.user.id;
+    }
+
+    // Add role (idempotent)
+    const { error: roleErr } = await supabaseAdmin
+      .from("user_roles").insert({ user_id: userId, role: data.role });
+    if (roleErr && !roleErr.message.includes("duplicate") && !roleErr.message.includes("unique"))
+      return { ok: false as const, error: roleErr.message };
+
+    // Assign zones if zone admin
+    if (data.role === "gerente_zona" && data.zone_ids && data.zone_ids.length > 0) {
+      const rows = data.zone_ids.map((zone_id) => ({ user_id: userId!, zone_id }));
+      await supabaseAdmin.from("user_zone_assignments").upsert(rows, { onConflict: "user_id,zone_id" });
+    }
+    // Assign stores if store admin
+    if (data.role === "gerente_tienda" && data.store_ids && data.store_ids.length > 0) {
+      const rows = data.store_ids.map((store_id) => ({ user_id: userId!, store_id }));
+      await supabaseAdmin.from("store_managers").upsert(rows, { onConflict: "user_id,store_id" });
+    }
+
+    return { ok: true as const };
+  });
+
+/** Replace zone assignments for a user (admin/ops only). */
+export const setUserZones = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({
+    user_id: z.string().uuid(),
+    zone_ids: z.array(z.string().uuid()).max(500),
+  }).parse(i))
+  .handler(async ({ context, data }) => {
+    await assertAdminOrOps(context.userId);
+    await supabaseAdmin.from("user_zone_assignments").delete().eq("user_id", data.user_id);
+    if (data.zone_ids.length > 0) {
+      const rows = data.zone_ids.map((zone_id) => ({ user_id: data.user_id, zone_id }));
+      const { error } = await supabaseAdmin.from("user_zone_assignments").insert(rows);
+      if (error) throw new Error(error.message);
+    }
+    return { ok: true };
+  });
+
+/** Replace store assignments for a user (admin/ops only). */
+export const setUserStores = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({
+    user_id: z.string().uuid(),
+    store_ids: z.array(z.string().uuid()).max(500),
+  }).parse(i))
+  .handler(async ({ context, data }) => {
+    await assertAdminOrOps(context.userId);
+    await supabaseAdmin.from("store_managers").delete().eq("user_id", data.user_id);
+    if (data.store_ids.length > 0) {
+      const rows = data.store_ids.map((store_id) => ({ user_id: data.user_id, store_id }));
+      const { error } = await supabaseAdmin.from("store_managers").insert(rows);
+      if (error) throw new Error(error.message);
+    }
+    return { ok: true };
+  });
+
+/** Remove an admin user role (does not delete the auth user). */
+export const removeAdminRole = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({
+    user_id: z.string().uuid(),
+    role: z.enum(["admin", "gerente_operaciones", "gerente_tienda", "gerente_zona"]),
+  }).parse(i))
+  .handler(async ({ context, data }) => {
+    const roles = await getUserRoles(context.userId);
+    const isAdmin = roles.includes("admin");
+    const isOps = roles.includes("gerente_operaciones");
+    if (!isAdmin && !isOps) throw new Error("Acceso denegado");
+    if ((data.role === "admin" || data.role === "gerente_operaciones") && !isAdmin)
+      throw new Error("Solo Administrador puede quitar este rol");
+    if (data.role === "admin" && data.user_id === context.userId)
+      throw new Error("No puedes quitarte el rol de Administrador a ti mismo");
+    await supabaseAdmin.from("user_roles").delete()
+      .eq("user_id", data.user_id).eq("role", data.role);
+    if (data.role === "gerente_zona")
+      await supabaseAdmin.from("user_zone_assignments").delete().eq("user_id", data.user_id);
+    if (data.role === "gerente_tienda")
+      await supabaseAdmin.from("store_managers").delete().eq("user_id", data.user_id);
     return { ok: true };
   });
 
