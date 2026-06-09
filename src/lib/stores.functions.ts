@@ -115,6 +115,7 @@ export const updateStore = createServerFn({ method: "POST" })
     latitude: z.preprocess((v) => (v === "" || v === null ? null : v), z.number().min(-90).max(90).nullable().optional()),
     longitude: z.preprocess((v) => (v === "" || v === null ? null : v), z.number().min(-180).max(180).nullable().optional()),
     geofence_radius_m: z.number().int().min(20).max(5000).optional(),
+    zone_id: z.preprocess((v) => (v === "" ? null : v), z.string().uuid().nullable().optional()),
   }).parse(i))
   .handler(async ({ context, data }) => {
     await assertAdminOrOps(context.userId);
@@ -126,6 +127,7 @@ export const updateStore = createServerFn({ method: "POST" })
       latitude?: number | null;
       longitude?: number | null;
       geofence_radius_m?: number;
+      zone_id?: string | null;
     } = {};
     if (data.name !== undefined) patch.name = data.name;
     if (data.address !== undefined) patch.address = data.address;
@@ -134,6 +136,7 @@ export const updateStore = createServerFn({ method: "POST" })
     if (data.latitude !== undefined) patch.latitude = data.latitude;
     if (data.longitude !== undefined) patch.longitude = data.longitude;
     if (data.geofence_radius_m !== undefined) patch.geofence_radius_m = data.geofence_radius_m;
+    if (data.zone_id !== undefined) patch.zone_id = data.zone_id;
     const { error } = await supabaseAdmin.from("stores").update(patch).eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
