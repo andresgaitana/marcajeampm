@@ -771,7 +771,7 @@ function DashboardPanel() {
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-semibold text-foreground">Asistencia por colaborador</h3>
-          <p className="text-xs text-muted-foreground">Horas trabajadas y días con marcaje</p>
+          <p className="text-xs text-muted-foreground">Click en una fila para ver el detalle semanal</p>
         </div>
         <Table>
           <TableHeader>
@@ -781,26 +781,36 @@ function DashboardPanel() {
               <TableHead className="text-right">Días</TableHead>
               <TableHead className="text-right">Horas</TableHead>
               <TableHead className="text-right">Marcajes</TableHead>
+              <TableHead></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {(summary ?? []).length === 0 ? (
-              <TableRow><TableCell colSpan={5} className="text-center py-6 text-muted-foreground">Sin datos en el periodo.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6} className="text-center py-6 text-muted-foreground">Sin datos en el periodo.</TableCell></TableRow>
             ) : (summary ?? []).map((e) => (
-              <TableRow key={e.id}>
+              <TableRow key={e.id} className="cursor-pointer hover:bg-secondary/40" onClick={() => setOpenEmployee({ id: e.id, name: e.full_name })}>
                 <TableCell>
                   <div className="font-medium text-foreground">{e.full_name}</div>
                   <div className="text-xs text-muted-foreground font-mono">{e.employee_code}</div>
                 </TableCell>
-                <TableCell className="capitalize text-muted-foreground">{e.role}</TableCell>
+                <TableCell className="text-muted-foreground">{ROLE_LABELS[e.role as EmployeeRole] ?? e.role}</TableCell>
                 <TableCell className="text-right">{e.days_present}</TableCell>
                 <TableCell className="text-right font-medium">{e.hours}</TableCell>
                 <TableCell className="text-right text-muted-foreground">{e.marks}</TableCell>
+                <TableCell className="text-right"><ChevronRight className="h-4 w-4 text-muted-foreground inline" /></TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
+
+      {openEmployee && (
+        <EmployeeWeeklyModal
+          employeeId={openEmployee.id}
+          employeeName={openEmployee.name}
+          onClose={() => setOpenEmployee(null)}
+        />
+      )}
     </div>
   );
 }
