@@ -829,34 +829,39 @@ function StoresPanel() {
   const updateFn = useServerFn(updateStore);
   const deleteFn = useServerFn(deleteStore);
   const bulkFn = useServerFn(bulkCreateStores);
+  const zonesFn = useServerFn(listZones);
   const qc = useQueryClient();
 
   const { data, isLoading } = useQuery({ queryKey: ["stores"], queryFn: () => listFn() });
+  const { data: zones } = useQuery({ queryKey: ["zones"], queryFn: () => zonesFn() });
   const stores = data ?? [];
+  const zoneList = zones ?? [];
 
   const [open, setOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [editing, setEditing] = useState<(typeof stores)[number] | null>(null);
-  const [form, setForm] = useState({ code: "", name: "", address: "", terminal_pin: "", active: true });
+  const [form, setForm] = useState({ code: "", name: "", address: "", terminal_pin: "", active: true, zone_id: "" as string });
   const [geoForm, setGeoForm] = useState({ latitude: "", longitude: "", radius: "300" });
 
   useEffect(() => {
     if (editing) {
+      const e = editing as { zone_id?: string | null };
       setForm({
         code: editing.code,
         name: editing.name,
         address: editing.address ?? "",
         terminal_pin: "",
         active: editing.active,
+        zone_id: e.zone_id ?? "",
       });
-      const e = editing as { latitude?: number | null; longitude?: number | null; geofence_radius_m?: number | null };
+      const g = editing as { latitude?: number | null; longitude?: number | null; geofence_radius_m?: number | null };
       setGeoForm({
-        latitude: e.latitude != null ? String(e.latitude) : "",
-        longitude: e.longitude != null ? String(e.longitude) : "",
-        radius: e.geofence_radius_m != null ? String(e.geofence_radius_m) : "300",
+        latitude: g.latitude != null ? String(g.latitude) : "",
+        longitude: g.longitude != null ? String(g.longitude) : "",
+        radius: g.geofence_radius_m != null ? String(g.geofence_radius_m) : "300",
       });
     } else {
-      setForm({ code: "", name: "", address: "", terminal_pin: "", active: true });
+      setForm({ code: "", name: "", address: "", terminal_pin: "", active: true, zone_id: "" });
       setGeoForm({ latitude: "", longitude: "", radius: "300" });
     }
   }, [editing, open]);
@@ -880,6 +885,7 @@ function StoresPanel() {
             latitude: lat,
             longitude: lng,
             geofence_radius_m: radius,
+            zone_id: form.zone_id || null,
             ...(form.terminal_pin ? { terminal_pin: form.terminal_pin } : {}),
           },
         });
@@ -899,6 +905,7 @@ function StoresPanel() {
             latitude: lat,
             longitude: lng,
             geofence_radius_m: radius,
+            zone_id: form.zone_id || null,
           },
         });
         toast.success("Tienda creada");
