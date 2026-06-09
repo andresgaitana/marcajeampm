@@ -85,7 +85,7 @@ export const bulkCreateStores = createServerFn({ method: "POST" })
     }).parse(i),
   )
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
     const pinHash = hashPin(data.terminal_pin);
     const rows = data.items.map((it) => ({
       code: it.code.toUpperCase(),
@@ -117,7 +117,7 @@ export const updateStore = createServerFn({ method: "POST" })
     geofence_radius_m: z.number().int().min(20).max(5000).optional(),
   }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
     const patch: {
       name?: string;
       address?: string | null;
@@ -143,7 +143,7 @@ export const deleteStore = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
     const { error } = await supabaseAdmin.from("stores").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
@@ -154,7 +154,7 @@ export const listStoreManagers = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ storeId: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
     const { data: rows } = await supabaseAdmin
       .from("store_managers").select("id, user_id, created_at").eq("store_id", data.storeId);
     const list = rows ?? [];
@@ -175,7 +175,7 @@ export const addStoreManager = createServerFn({ method: "POST" })
     password: z.string().min(8).max(72).optional(),
   }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
 
     // Find existing user by email (paginate up to a reasonable size)
     let userId: string | null = null;
@@ -209,7 +209,7 @@ export const removeStoreManager = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
     const { error } = await supabaseAdmin.from("store_managers").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
