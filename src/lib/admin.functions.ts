@@ -4,50 +4,72 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { hashPin } from "./pin.server";
 
-async function assertAdmin(userId: string) {
-  const { data, error } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  if (error) throw new Error("No se pudo verificar el rol");
-  if (!data) throw new Error("Acceso denegado: se requiere rol de administrador");
-}
-
-async function getManagerStoreIds(userId: string): Promise<string[]> {
-  const { data, error } = await supabaseAdmin
-    .from("store_managers")
-    .select("store_id")
-    .eq("user_id", userId);
-  if (error) throw new Error("No se pudieron cargar tiendas asignadas");
-  return (data ?? []).map((r) => r.store_id);
-}
-
-async function isAdmin(userId: string) {
+/** Returns the set of roles the user has from public.user_roles. */
+export async function getUserRoles(userId: string): Promise<string[]> {
   const { data } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  return !!data;
+    .from("user_roles").select("role").eq("user_id", userId);
+  return (data ?? []).map((r) => r.role as string);
 }
 
-/** Returns access scope for current user: admin (all stores) or manager (subset). */
-async function getScope(userId: string): Promise<{ isAdmin: boolean; storeIds: string[] | "all" }> {
-  if (await isAdmin(userId)) return { isAdmin: true, storeIds: "all" };
-  const ids = await getManagerStoreIds(userId);
-  if (ids.length === 0) throw new Error("Acceso denegado: tu cuenta no tiene tiendas asignadas");
-  return { isAdmin: false, storeIds: ids };
+export async function getAccessibleStoreIds(userId: string): Promise<string[]> {
+  const { data, error } = await supabaseAdmin.rpc("accessible_store_ids", { _user_id: userId });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((r: { store_id: string }) => r.store_id);
+}
+
+export type AccessScope = {
+  isAdmin: boolean;
+  isOperations: boolean;
+  isZoneAdmin: boolean;
+  isStoreAdmin: boolean;
+  storeIds: string[] | "all";
+};
+
+/** Returns access scope for current user. Throws if no admin-level access. */
+export async function getScope(userId: string): Promise<AccessScope> {
+  const roles = await getUserRoles(userId);
+  const isAdmin = roles.includes("admin");
+  const isOperations = roles.includes("gerente_operaciones");
+  const isZoneAdmin = roles.includes("gerente_zona");
+  const isStoreAdmin = roles.includes("gerente_tienda");
+  // Backward-compat: a user with only store_managers rows still gets access.
+  const ids = await getAccessibleStoreIds(userId);
+  if (isAdmin || isOperations) return { isAdmin, isOperations, isZoneAdmin, isStoreAdmin, storeIds: "all" };
+  if (ids.length === 0)
+    throw new Error("Acceso denegado: tu cuenta no tiene tiendas asignadas");
+  return { isAdmin, isOperations, isZoneAdmin, isStoreAdmin, storeIds: ids };
+}
+
+async function assertAdminOrOps(userId: string) {
+  const roles = await getUserRoles(userId);
+  if (!roles.includes("admin") && !roles.includes("gerente_operaciones"))
+    throw new Error("Acceso denegado: solo Admin/Gerente de Operaciones");
+}
+
+async function assertSuperAdmin(userId: string) {
+  const roles = await getUserRoles(userId);
+  if (!roles.includes("admin")) throw new Error("Acceso denegado: solo Administrador");
 }
 
 export const checkAdmin = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const admin = await isAdmin(context.userId);
-    const storeIds = admin ? [] : await getManagerStoreIds(context.userId);
-    return { isAdmin: admin, isManager: !admin && storeIds.length > 0, storeIds };
+    const roles = await getUserRoles(context.userId);
+    const isAdmin = roles.includes("admin");
+    const isOperations = roles.includes("gerente_operaciones");
+    const isZoneAdmin = roles.includes("gerente_zona");
+    const isStoreAdmin = roles.includes("gerente_tienda");
+    const ids = await getAccessibleStoreIds(context.userId);
+    return {
+      isAdmin,
+      isOperations,
+      isZoneAdmin,
+      isStoreAdmin,
+      // Backward compatibility for older callers
+      isManager: !isAdmin && !isOperations && ids.length > 0,
+      hasAccess: isAdmin || isOperations || ids.length > 0,
+      storeIds: isAdmin || isOperations ? [] : ids,
+    };
   });
 
 /** First-time bootstrap: if no admin exists, current user becomes admin. */
