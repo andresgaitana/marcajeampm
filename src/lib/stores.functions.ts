@@ -4,37 +4,36 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { hashPin } from "./pin.server";
 
-async function assertAdmin(userId: string) {
+async function assertAdminOrOps(userId: string) {
   const { data } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  if (!data) throw new Error("Acceso denegado: se requiere rol de administrador");
+    .from("user_roles").select("role").eq("user_id", userId)
+    .in("role", ["admin", "gerente_operaciones"]);
+  if (!data || data.length === 0)
+    throw new Error("Acceso denegado: solo Admin/Gerente de Operaciones");
 }
 
 /** List stores: admin sees all, manager sees only assigned. */
 export const listStores = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data: adminRow } = await supabaseAdmin
-      .from("user_roles").select("role").eq("user_id", context.userId).eq("role", "admin").maybeSingle();
-    if (adminRow) {
+    const { data: roles } = await supabaseAdmin
+      .from("user_roles").select("role").eq("user_id", context.userId);
+    const roleSet = new Set((roles ?? []).map((r) => r.role as string));
+    if (roleSet.has("admin") || roleSet.has("gerente_operaciones")) {
       const { data, error } = await supabaseAdmin
         .from("stores")
-        .select("id, code, name, address, latitude, longitude, geofence_radius_m, active, created_at")
+        .select("id, code, name, address, latitude, longitude, geofence_radius_m, active, zone_id, created_at, zones(code, name)")
         .order("code", { ascending: true });
       if (error) throw new Error(error.message);
       return data ?? [];
     }
-    const { data: assigns } = await supabaseAdmin
-      .from("store_managers").select("store_id").eq("user_id", context.userId);
-    const ids = (assigns ?? []).map((r) => r.store_id);
+    // Use accessible_store_ids for zone/store admins
+    const { data: idRows } = await supabaseAdmin.rpc("accessible_store_ids", { _user_id: context.userId });
+    const ids = (idRows ?? []).map((r: { store_id: string }) => r.store_id);
     if (ids.length === 0) return [];
     const { data, error } = await supabaseAdmin
       .from("stores")
-      .select("id, code, name, address, latitude, longitude, geofence_radius_m, active, created_at")
+      .select("id, code, name, address, latitude, longitude, geofence_radius_m, active, zone_id, created_at, zones(code, name)")
       .in("id", ids)
       .order("code", { ascending: true });
     if (error) throw new Error(error.message);
@@ -50,13 +49,14 @@ const storeInput = z.object({
   latitude: z.number().min(-90).max(90).optional().nullable(),
   longitude: z.number().min(-180).max(180).optional().nullable(),
   geofence_radius_m: z.number().int().min(20).max(5000).optional(),
+  zone_id: z.string().uuid().nullable().optional(),
 });
 
 export const createStore = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => storeInput.parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertAdminOrOps(context.userId);
     const { error } = await supabaseAdmin.from("stores").insert({
       code: data.code.toUpperCase(),
       name: data.name,
@@ -66,6 +66,7 @@ export const createStore = createServerFn({ method: "POST" })
       latitude: data.latitude ?? null,
       longitude: data.longitude ?? null,
       geofence_radius_m: data.geofence_radius_m ?? 300,
+      zone_id: data.zone_id ?? null,
     });
     if (error) throw new Error(error.message);
     return { ok: true };
