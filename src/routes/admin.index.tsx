@@ -646,6 +646,7 @@ function DashboardPanel() {
   const metricsFn = useServerFn(getDashboardMetrics);
   const summaryFn = useServerFn(getEmployeeSummary);
   const [days, setDays] = useState(7);
+  const [openEmployee, setOpenEmployee] = useState<{ id: string; name: string } | null>(null);
 
   const { data: m, isLoading } = useQuery({
     queryKey: ["dashboard", days],
