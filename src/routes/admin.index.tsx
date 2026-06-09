@@ -1285,3 +1285,467 @@ function FingerprintButton({ employeeId, employeeName }: { employeeId: string; e
     </Dialog>
   );
 }
+
+// =====================================================================
+// ZONAS
+// =====================================================================
+function ZonesPanel() {
+  const listFn = useServerFn(listZones);
+  const createFn = useServerFn(createZone);
+  const updateFn = useServerFn(updateZone);
+  const deleteFn = useServerFn(deleteZone);
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ["zones"], queryFn: () => listFn() });
+  const zones = data ?? [];
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<(typeof zones)[number] | null>(null);
+  const [form, setForm] = useState({ code: "", name: "", active: true });
+
+  useEffect(() => {
+    if (editing) setForm({ code: editing.code, name: editing.name, active: editing.active });
+    else setForm({ code: "", name: "", active: true });
+  }, [editing, open]);
+
+  const save = async () => {
+    try {
+      if (editing) {
+        await updateFn({ data: { id: editing.id, name: form.name, active: form.active } });
+        toast.success("Zona actualizada");
+      } else {
+        await createFn({ data: { code: form.code, name: form.name, active: form.active } });
+        toast.success("Zona creada");
+      }
+      setOpen(false); setEditing(null);
+      qc.invalidateQueries({ queryKey: ["zones"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error al guardar");
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (!confirm("¿Eliminar esta zona? Las tiendas quedarán sin zona asignada.")) return;
+    try {
+      await deleteFn({ data: { id } });
+      toast.success("Zona eliminada");
+      qc.invalidateQueries({ queryKey: ["zones"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error al eliminar");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-foreground">Zonas</h2>
+          <p className="text-sm text-muted-foreground">{zones.length} registradas</p>
+        </div>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setEditing(null); }}>
+          <DialogTrigger asChild>
+            <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
+              <Plus className="h-4 w-4 mr-2" /> Nueva zona
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>{editing ? "Editar zona" : "Nueva zona"}</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              <div>
+                <Label>Código</Label>
+                <Input disabled={!!editing} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} placeholder="Ej. NORTE, SUR, METRO" />
+              </div>
+              <div>
+                <Label>Nombre</Label>
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Ej. Zona Norte" />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
+                Activa
+              </label>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
+              <Button onClick={save} className="bg-accent text-accent-foreground hover:bg-accent/90">Guardar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+      <div className="bg-card rounded-2xl border border-border overflow-hidden">
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50">
+            <TableHead>Código</TableHead><TableHead>Nombre</TableHead><TableHead>Estado</TableHead><TableHead className="text-right">Acciones</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+            ) : zones.length === 0 ? (
+              <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Crea la primera zona para agrupar tus tiendas.</TableCell></TableRow>
+            ) : zones.map((z) => (
+              <TableRow key={z.id}>
+                <TableCell className="font-mono text-foreground">{z.code}</TableCell>
+                <TableCell className="font-medium text-foreground">{z.name}</TableCell>
+                <TableCell>{z.active ? <Badge className="bg-[oklch(0.65_0.16_155)] text-white">Activa</Badge> : <Badge variant="secondary">Inactiva</Badge>}</TableCell>
+                <TableCell className="text-right">
+                  <Button variant="ghost" size="sm" onClick={() => { setEditing(z); setOpen(true); }}><Pencil className="h-4 w-4" /></Button>
+                  <Button variant="ghost" size="sm" onClick={() => remove(z.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// USUARIOS ADMIN
+// =====================================================================
+function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
+  const listFn = useServerFn(listAdminUsers);
+  const upsertFn = useServerFn(upsertAdminUser);
+  const removeFn = useServerFn(removeAdminRole);
+  const setZonesFn = useServerFn(setUserZones);
+  const setStoresFn = useServerFn(setUserStores);
+  const zonesFn = useServerFn(listZones);
+  const storesFn = useServerFn(listStores);
+  const qc = useQueryClient();
+
+  const { data, isLoading } = useQuery({ queryKey: ["adminUsers"], queryFn: () => listFn() });
+  const { data: zones } = useQuery({ queryKey: ["zones"], queryFn: () => zonesFn() });
+  const { data: stores } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
+  const users = data ?? [];
+
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    email: "", password: "", role: "gerente_tienda" as "admin" | "gerente_operaciones" | "gerente_tienda" | "gerente_zona",
+    zone_ids: [] as string[], store_ids: [] as string[],
+  });
+  const [editing, setEditing] = useState<(typeof users)[number] | null>(null);
+  const [editZones, setEditZones] = useState<Set<string>>(new Set());
+  const [editStores, setEditStores] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (editing) {
+      setEditZones(new Set(editing.zones.map((z) => z.id)));
+      setEditStores(new Set(editing.stores.map((s) => s.id)));
+    }
+  }, [editing]);
+
+  const save = async () => {
+    try {
+      const r = await upsertFn({ data: {
+        email: form.email,
+        password: form.password || undefined,
+        role: form.role,
+        zone_ids: form.role === "gerente_zona" ? form.zone_ids : undefined,
+        store_ids: form.role === "gerente_tienda" ? form.store_ids : undefined,
+      }});
+      if (!r.ok) { toast.error(r.error); return; }
+      toast.success("Usuario admin creado/actualizado");
+      setOpen(false);
+      setForm({ email: "", password: "", role: "gerente_tienda", zone_ids: [], store_ids: [] });
+      qc.invalidateQueries({ queryKey: ["adminUsers"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    try {
+      if (editing.roles.includes("gerente_zona"))
+        await setZonesFn({ data: { user_id: editing.user_id, zone_ids: Array.from(editZones) } });
+      if (editing.roles.includes("gerente_tienda"))
+        await setStoresFn({ data: { user_id: editing.user_id, store_ids: Array.from(editStores) } });
+      toast.success("Asignaciones actualizadas");
+      setEditing(null);
+      qc.invalidateQueries({ queryKey: ["adminUsers"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const removeRole = async (user_id: string, role: string) => {
+    if (!confirm(`¿Quitar rol "${ADMIN_ROLE_LABELS[role] ?? role}" a este usuario?`)) return;
+    try {
+      await removeFn({ data: { user_id, role: role as "admin" | "gerente_operaciones" | "gerente_tienda" | "gerente_zona" } });
+      toast.success("Rol removido");
+      qc.invalidateQueries({ queryKey: ["adminUsers"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-foreground">Usuarios administrativos</h2>
+          <p className="text-sm text-muted-foreground">Gestiona quién puede acceder al panel y qué tiendas/zonas ve</p>
+        </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
+              <Plus className="h-4 w-4 mr-2" /> Nuevo usuario admin
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Nuevo usuario administrativo</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              <div>
+                <Label>Email</Label>
+                <Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="usuario@empresa.com" />
+              </div>
+              <div>
+                <Label>Contraseña inicial (sólo si el usuario no existe)</Label>
+                <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="mínimo 8 caracteres" />
+              </div>
+              <div>
+                <Label>Rol</Label>
+                <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v as typeof form.role })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="gerente_tienda">Gerente de Tienda</SelectItem>
+                    <SelectItem value="gerente_zona">Gerente de Zona (Admin)</SelectItem>
+                    {isAdmin && <SelectItem value="gerente_operaciones">Gerente de Operaciones</SelectItem>}
+                    {isAdmin && <SelectItem value="admin">Administrador</SelectItem>}
+                  </SelectContent>
+                </Select>
+              </div>
+              {form.role === "gerente_tienda" && (
+                <div className="rounded-xl border border-border p-2 bg-secondary/40 max-h-48 overflow-y-auto space-y-1">
+                  <p className="text-xs text-muted-foreground px-1">Tiendas asignadas</p>
+                  {(stores ?? []).map((s) => (
+                    <label key={s.id} className="flex items-center gap-2 text-sm py-1 px-1">
+                      <input type="checkbox" checked={form.store_ids.includes(s.id)} onChange={(e) => {
+                        setForm({ ...form, store_ids: e.target.checked ? [...form.store_ids, s.id] : form.store_ids.filter((x) => x !== s.id) });
+                      }} />
+                      <span className="font-mono text-xs">{s.code}</span><span>{s.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {form.role === "gerente_zona" && (
+                <div className="rounded-xl border border-border p-2 bg-secondary/40 max-h-48 overflow-y-auto space-y-1">
+                  <p className="text-xs text-muted-foreground px-1">Zonas asignadas</p>
+                  {(zones ?? []).map((z) => (
+                    <label key={z.id} className="flex items-center gap-2 text-sm py-1 px-1">
+                      <input type="checkbox" checked={form.zone_ids.includes(z.id)} onChange={(e) => {
+                        setForm({ ...form, zone_ids: e.target.checked ? [...form.zone_ids, z.id] : form.zone_ids.filter((x) => x !== z.id) });
+                      }} />
+                      <span className="font-mono text-xs">{z.code}</span><span>{z.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
+              <Button onClick={save} className="bg-accent text-accent-foreground hover:bg-accent/90">Guardar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <div className="bg-card rounded-2xl border border-border overflow-hidden">
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50">
+            <TableHead>Email</TableHead><TableHead>Roles</TableHead><TableHead>Alcance</TableHead><TableHead className="text-right">Acciones</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+            ) : users.length === 0 ? (
+              <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Sin usuarios administrativos.</TableCell></TableRow>
+            ) : users.map((u) => (
+              <TableRow key={u.user_id}>
+                <TableCell className="font-medium text-foreground">{u.email ?? <span className="text-muted-foreground italic">sin email</span>}</TableCell>
+                <TableCell>
+                  <div className="flex flex-wrap gap-1">
+                    {u.roles.map((r) => (
+                      <Badge key={r} variant="secondary" className="text-xs">
+                        {ADMIN_ROLE_LABELS[r] ?? r}
+                        {(isAdmin || (r !== "admin" && r !== "gerente_operaciones")) && (
+                          <button className="ml-1 hover:text-destructive" onClick={() => removeRole(u.user_id, r)}>×</button>
+                        )}
+                      </Badge>
+                    ))}
+                  </div>
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {u.zones.length > 0 && <div>Zonas: {u.zones.map((z) => z.code).join(", ")}</div>}
+                  {u.stores.length > 0 && <div>Tiendas: {u.stores.map((s) => s.code).join(", ")}</div>}
+                  {u.roles.includes("admin") || u.roles.includes("gerente_operaciones") ? <div>Todas las tiendas</div> : null}
+                </TableCell>
+                <TableCell className="text-right">
+                  {(u.roles.includes("gerente_zona") || u.roles.includes("gerente_tienda")) && (
+                    <Button variant="ghost" size="sm" onClick={() => setEditing(u)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {editing && (
+        <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Editar asignaciones · {editing.email}</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              {editing.roles.includes("gerente_zona") && (
+                <div>
+                  <Label className="text-sm">Zonas asignadas</Label>
+                  <div className="rounded-xl border border-border p-2 bg-secondary/40 max-h-48 overflow-y-auto space-y-1 mt-1">
+                    {(zones ?? []).map((z) => (
+                      <label key={z.id} className="flex items-center gap-2 text-sm py-1 px-1">
+                        <input type="checkbox" checked={editZones.has(z.id)} onChange={(e) => {
+                          const n = new Set(editZones); if (e.target.checked) n.add(z.id); else n.delete(z.id); setEditZones(n);
+                        }} />
+                        <span className="font-mono text-xs">{z.code}</span><span>{z.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {editing.roles.includes("gerente_tienda") && (
+                <div>
+                  <Label className="text-sm">Tiendas asignadas</Label>
+                  <div className="rounded-xl border border-border p-2 bg-secondary/40 max-h-48 overflow-y-auto space-y-1 mt-1">
+                    {(stores ?? []).map((s) => (
+                      <label key={s.id} className="flex items-center gap-2 text-sm py-1 px-1">
+                        <input type="checkbox" checked={editStores.has(s.id)} onChange={(e) => {
+                          const n = new Set(editStores); if (e.target.checked) n.add(s.id); else n.delete(s.id); setEditStores(n);
+                        }} />
+                        <span className="font-mono text-xs">{s.code}</span><span>{s.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
+              <Button onClick={saveEdit} className="bg-accent text-accent-foreground hover:bg-accent/90">Guardar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// MODAL MARCAJE SEMANAL POR PERSONA
+// =====================================================================
+function EmployeeWeeklyModal({
+  employeeId,
+  employeeName,
+  onClose,
+}: {
+  employeeId: string;
+  employeeName: string;
+  onClose: () => void;
+}) {
+  const fetchFn = useServerFn(getEmployeeWeeklyMarks);
+  const [range, setRange] = useState<"current_week" | "previous_week" | "current_month" | "payroll">("current_week");
+  const today = new Date().toISOString().slice(0, 10);
+  const fifteenAgo = new Date(); fifteenAgo.setDate(fifteenAgo.getDate() - 14);
+  const [from, setFrom] = useState(fifteenAgo.toISOString().slice(0, 10));
+  const [to, setTo] = useState(today);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["empWeekly", employeeId, range, range === "payroll" ? from : null, range === "payroll" ? to : null],
+    queryFn: () => fetchFn({ data: { employeeId, range, ...(range === "payroll" ? { from, to } : {}) } }),
+  });
+
+  const dayName = (iso: string) => {
+    const d = new Date(iso + "T00:00:00");
+    return ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][(d.getDay() + 6) % 7];
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><CalendarIcon className="h-5 w-5" /> {employeeName}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-[180px]">
+              <Label className="text-xs">Rango</Label>
+              <Select value={range} onValueChange={(v) => setRange(v as typeof range)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="current_week">Semana actual</SelectItem>
+                  <SelectItem value="previous_week">Semana anterior</SelectItem>
+                  <SelectItem value="current_month">Mes actual</SelectItem>
+                  <SelectItem value="payroll">Semana planilla</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {range === "payroll" && (
+              <>
+                <div><Label className="text-xs">Desde</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+                <div><Label className="text-xs">Hasta</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+              </>
+            )}
+          </div>
+
+          {isLoading || !data ? (
+            <p className="text-center py-8 text-muted-foreground">Cargando…</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-xl bg-primary text-primary-foreground p-3">
+                  <div className="text-2xl font-bold">{data.total_hours}</div>
+                  <div className="text-xs opacity-90">Horas totales</div>
+                </div>
+                <div className="rounded-xl bg-accent text-accent-foreground p-3">
+                  <div className="text-2xl font-bold">{data.days_present}</div>
+                  <div className="text-xs opacity-90">Días con marcaje</div>
+                </div>
+                <div className="rounded-xl bg-secondary p-3">
+                  <div className="text-2xl font-bold">{data.total_marks}</div>
+                  <div className="text-xs text-muted-foreground">Marcajes totales</div>
+                </div>
+              </div>
+
+              <div className="bg-card rounded-2xl border border-border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-secondary/50">
+                      <TableHead>Día</TableHead>
+                      <TableHead>Entrada</TableHead>
+                      <TableHead>Salida</TableHead>
+                      <TableHead className="text-right">Marcajes</TableHead>
+                      <TableHead className="text-right">Horas</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.days.map((d) => (
+                      <TableRow key={d.date} className={d.marks.length === 0 ? "opacity-50" : ""}>
+                        <TableCell>
+                          <div className="font-medium text-foreground">{dayName(d.date)}</div>
+                          <div className="text-xs text-muted-foreground">{d.date}</div>
+                        </TableCell>
+                        <TableCell className="text-sm">{d.first_entry ? new Date(d.first_entry).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "—"}</TableCell>
+                        <TableCell className="text-sm">{d.last_exit ? new Date(d.last_exit).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "—"}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-primary">{d.entries}</span> / <span className="text-accent">{d.exits}</span>
+                        </TableCell>
+                        <TableCell className="text-right font-medium">{d.hours > 0 ? d.hours : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
