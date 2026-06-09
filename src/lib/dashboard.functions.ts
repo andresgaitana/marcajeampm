@@ -2,16 +2,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { getScope } from "./admin.functions";
 
-async function getScope(userId: string): Promise<{ isAdmin: boolean; storeIds: string[] | "all" }> {
-  const { data: adminRow } = await supabaseAdmin
-    .from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle();
-  if (adminRow) return { isAdmin: true, storeIds: "all" };
-  const { data: assigns } = await supabaseAdmin
-    .from("store_managers").select("store_id").eq("user_id", userId);
-  const ids = (assigns ?? []).map((r) => r.store_id);
-  if (ids.length === 0) throw new Error("Sin tiendas asignadas");
-  return { isAdmin: false, storeIds: ids };
+/** Returns Monday 00:00 of the week containing `d`. */
+function startOfWeek(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  const dow = (x.getDay() + 6) % 7; // 0 = Monday
+  x.setDate(x.getDate() - dow);
+  return x;
 }
 
 type Rec = {
@@ -129,7 +128,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       stuck_open: stuckOpen,
       by_store: byStore,
       trend,
-      is_admin: scope.isAdmin,
+      is_admin: scope.isAdmin || scope.isOperations,
     };
   });
 
@@ -198,4 +197,120 @@ export const getEmployeeSummary = createServerFn({ method: "POST" })
     }).sort((a, b) => b.hours - a.hours);
 
     return result;
+  });
+
+/** Weekly marks grouped by day for a single employee. */
+export const getEmployeeWeeklyMarks = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      employeeId: z.string().uuid(),
+      range: z.enum(["current_week", "previous_week", "current_month", "payroll"]).default("current_week"),
+      from: z.string().optional(), // ISO date (yyyy-mm-dd) for payroll range
+      to: z.string().optional(),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    const { data: emp } = await supabaseAdmin
+      .from("employees").select("id, full_name, employee_code, role, store_id").eq("id", data.employeeId).maybeSingle();
+    if (!emp) throw new Error("Colaborador no encontrado");
+    if (scope.storeIds !== "all" && !scope.storeIds.includes(emp.store_id))
+      throw new Error("Sin acceso a este colaborador");
+
+    // Compute range
+    let from: Date, to: Date;
+    const now = new Date();
+    if (data.range === "current_week") {
+      from = startOfWeek(now);
+      to = new Date(from); to.setDate(to.getDate() + 7);
+    } else if (data.range === "previous_week") {
+      to = startOfWeek(now);
+      from = new Date(to); from.setDate(from.getDate() - 7);
+    } else if (data.range === "current_month") {
+      from = new Date(now.getFullYear(), now.getMonth(), 1);
+      to = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    } else {
+      if (!data.from || !data.to) throw new Error("Fechas requeridas para semana planilla");
+      from = new Date(data.from + "T00:00:00");
+      to = new Date(data.to + "T00:00:00");
+      to.setDate(to.getDate() + 1); // include end day
+    }
+
+    const { data: recs } = await supabaseAdmin
+      .from("attendance_records")
+      .select("id, type, created_at, store_id, store:stores(code, name)")
+      .eq("employee_id", data.employeeId)
+      .gte("created_at", from.toISOString())
+      .lt("created_at", to.toISOString())
+      .order("created_at", { ascending: true });
+    const records = recs ?? [];
+
+    // Group by yyyy-mm-dd
+    const byDay = new Map<string, typeof records>();
+    for (const r of records) {
+      const key = new Date(r.created_at).toISOString().slice(0, 10);
+      if (!byDay.has(key)) byDay.set(key, []);
+      byDay.get(key)!.push(r);
+    }
+
+    // Build days array between from..to-1
+    const days: Array<{
+      date: string;
+      entries: number;
+      exits: number;
+      first_entry: string | null;
+      last_exit: string | null;
+      hours: number;
+      marks: Array<{ id: string; type: string; time: string; store: string | null }>;
+    }> = [];
+    for (let d = new Date(from); d < to; d.setDate(d.getDate() + 1)) {
+      const key = d.toISOString().slice(0, 10);
+      const list = byDay.get(key) ?? [];
+      let firstEntry: string | null = null;
+      let lastExit: string | null = null;
+      let totalMs = 0;
+      let openEntry: Date | null = null;
+      let entries = 0;
+      let exits = 0;
+      const marks: Array<{ id: string; type: string; time: string; store: string | null }> = [];
+      for (const r of list) {
+        const t = new Date(r.created_at);
+        if (r.type === "entrada") {
+          entries++;
+          if (!firstEntry) firstEntry = r.created_at;
+          openEntry = t;
+        } else {
+          exits++;
+          lastExit = r.created_at;
+          if (openEntry) {
+            totalMs += t.getTime() - openEntry.getTime();
+            openEntry = null;
+          }
+        }
+        const st = Array.isArray(r.store) ? r.store[0] : r.store;
+        marks.push({
+          id: r.id, type: r.type, time: r.created_at,
+          store: st ? `${st.code} · ${st.name}` : null,
+        });
+      }
+      days.push({
+        date: key, entries, exits, first_entry: firstEntry, last_exit: lastExit,
+        hours: Math.round((totalMs / 3600000) * 10) / 10, marks,
+      });
+    }
+
+    const totalHours = days.reduce((s, d) => s + d.hours, 0);
+    const totalMarks = records.length;
+    const daysPresent = days.filter((d) => d.marks.length > 0).length;
+
+    return {
+      employee: emp,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      days,
+      total_hours: Math.round(totalHours * 10) / 10,
+      total_marks: totalMarks,
+      days_present: daysPresent,
+    };
   });
