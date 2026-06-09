@@ -1042,6 +1042,7 @@ function StoresPanel() {
             <TableRow className="bg-secondary/50">
               <TableHead>Código</TableHead>
               <TableHead>Nombre</TableHead>
+              <TableHead>Zona</TableHead>
               <TableHead>Dirección</TableHead>
               <TableHead>Estado</TableHead>
               <TableHead className="text-right">Acciones</TableHead>
@@ -1049,15 +1050,22 @@ function StoresPanel() {
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
             ) : stores.length === 0 ? (
-              <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+              <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                 Sin tiendas. Usa "Carga masiva" para crear A01–A95 de un solo paso.
               </TableCell></TableRow>
             ) : stores.map((s) => (
               <TableRow key={s.id}>
                 <TableCell className="font-mono text-foreground">{s.code}</TableCell>
                 <TableCell className="font-medium text-foreground">{s.name}</TableCell>
+                <TableCell className="text-muted-foreground text-sm">
+                  {(() => {
+                    const z = (s as { zones?: { code?: string; name?: string } | { code?: string; name?: string }[] }).zones;
+                    const zone = Array.isArray(z) ? z[0] : z;
+                    return zone?.code ? `${zone.code} · ${zone.name ?? ""}` : "—";
+                  })()}
+                </TableCell>
                 <TableCell className="text-muted-foreground text-sm">{s.address ?? "—"}</TableCell>
                 <TableCell>
                   {s.active ? (
