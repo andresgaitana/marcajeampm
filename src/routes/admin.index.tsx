@@ -989,6 +989,18 @@ function StoresPanel() {
                   <Label>Dirección (opcional)</Label>
                   <Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
                 </div>
+                <div>
+                  <Label>Zona</Label>
+                  <Select value={form.zone_id || "__none__"} onValueChange={(v) => setForm({ ...form, zone_id: v === "__none__" ? "" : v })}>
+                    <SelectTrigger><SelectValue placeholder="Sin zona" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">Sin zona</SelectItem>
+                      {zoneList.map((z) => (
+                        <SelectItem key={z.id} value={z.id}>{z.code} · {z.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="border-t border-border pt-3">
                   <div className="flex items-center gap-2 mb-2">
                     <MapPin className="h-4 w-4 text-accent" />
