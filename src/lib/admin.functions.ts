@@ -130,6 +130,178 @@ export const createEmployee = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// =====================================================================
+// Admin Users (Operations and Zone managers) management
+// =====================================================================
+
+/** List users with admin-level roles (admin, operations, zone, store). */
+export const listAdminUsers = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertAdminOrOps(context.userId);
+    const { data: roles } = await supabaseAdmin
+      .from("user_roles")
+      .select("id, user_id, role, created_at");
+    const { data: zoneAssigns } = await supabaseAdmin
+      .from("user_zone_assignments")
+      .select("user_id, zone_id, zones(code, name)");
+    const { data: storeAssigns } = await supabaseAdmin
+      .from("store_managers")
+      .select("user_id, store_id, stores(code, name)");
+
+    const byUser = new Map<string, {
+      user_id: string;
+      email: string | null;
+      roles: string[];
+      zones: Array<{ id: string; code: string; name: string }>;
+      stores: Array<{ id: string; code: string; name: string }>;
+    }>();
+    const ensure = (id: string) => {
+      if (!byUser.has(id)) byUser.set(id, { user_id: id, email: null, roles: [], zones: [], stores: [] });
+      return byUser.get(id)!;
+    };
+    for (const r of roles ?? []) ensure(r.user_id).roles.push(r.role as string);
+    for (const z of zoneAssigns ?? []) {
+      const zone = (z as { zones?: { code: string; name: string } | { code: string; name: string }[] }).zones;
+      const obj = Array.isArray(zone) ? zone[0] : zone;
+      ensure(z.user_id).zones.push({ id: z.zone_id, code: obj?.code ?? "", name: obj?.name ?? "" });
+    }
+    for (const s of storeAssigns ?? []) {
+      const st = (s as { stores?: { code: string; name: string } | { code: string; name: string }[] }).stores;
+      const obj = Array.isArray(st) ? st[0] : st;
+      ensure(s.user_id).stores.push({ id: s.store_id, code: obj?.code ?? "", name: obj?.name ?? "" });
+    }
+
+    // Hydrate emails
+    const result = Array.from(byUser.values());
+    for (const u of result) {
+      const { data } = await supabaseAdmin.auth.admin.getUserById(u.user_id);
+      u.email = data?.user?.email ?? null;
+    }
+    return result.sort((a, b) => (a.email ?? "").localeCompare(b.email ?? ""));
+  });
+
+const adminUserInput = z.object({
+  email: z.string().email().max(255),
+  password: z.string().min(8).max(72).optional(),
+  role: z.enum(["admin", "gerente_operaciones", "gerente_tienda", "gerente_zona"]),
+  store_ids: z.array(z.string().uuid()).max(500).optional(),
+  zone_ids: z.array(z.string().uuid()).max(500).optional(),
+});
+
+/** Create/assign an admin user. Only admin can create other admins or operations. */
+export const upsertAdminUser = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => adminUserInput.parse(i))
+  .handler(async ({ context, data }) => {
+    const roles = await getUserRoles(context.userId);
+    const isAdmin = roles.includes("admin");
+    const isOps = roles.includes("gerente_operaciones");
+    if (!isAdmin && !isOps) throw new Error("Acceso denegado");
+    // Only admin can create admin or operations users
+    if ((data.role === "admin" || data.role === "gerente_operaciones") && !isAdmin)
+      throw new Error("Solo Administrador puede crear este rol");
+
+    // Find or create auth user by email
+    let userId: string | null = null;
+    let page = 1;
+    while (page < 10) {
+      const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
+      const found = list?.users?.find((u) => u.email?.toLowerCase() === data.email.toLowerCase());
+      if (found) { userId = found.id; break; }
+      if (!list?.users || list.users.length < 200) break;
+      page++;
+    }
+    if (!userId) {
+      if (!data.password) return { ok: false as const, error: "Usuario no existe. Define una contraseña inicial." };
+      const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
+        email: data.email, password: data.password, email_confirm: true,
+      });
+      if (error || !created.user) return { ok: false as const, error: error?.message ?? "No se pudo crear el usuario" };
+      userId = created.user.id;
+    }
+
+    // Add role (idempotent)
+    const { error: roleErr } = await supabaseAdmin
+      .from("user_roles").insert({ user_id: userId, role: data.role });
+    if (roleErr && !roleErr.message.includes("duplicate") && !roleErr.message.includes("unique"))
+      return { ok: false as const, error: roleErr.message };
+
+    // Assign zones if zone admin
+    if (data.role === "gerente_zona" && data.zone_ids && data.zone_ids.length > 0) {
+      const rows = data.zone_ids.map((zone_id) => ({ user_id: userId!, zone_id }));
+      await supabaseAdmin.from("user_zone_assignments").upsert(rows, { onConflict: "user_id,zone_id" });
+    }
+    // Assign stores if store admin
+    if (data.role === "gerente_tienda" && data.store_ids && data.store_ids.length > 0) {
+      const rows = data.store_ids.map((store_id) => ({ user_id: userId!, store_id }));
+      await supabaseAdmin.from("store_managers").upsert(rows, { onConflict: "user_id,store_id" });
+    }
+
+    return { ok: true as const };
+  });
+
+/** Replace zone assignments for a user (admin/ops only). */
+export const setUserZones = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({
+    user_id: z.string().uuid(),
+    zone_ids: z.array(z.string().uuid()).max(500),
+  }).parse(i))
+  .handler(async ({ context, data }) => {
+    await assertAdminOrOps(context.userId);
+    await supabaseAdmin.from("user_zone_assignments").delete().eq("user_id", data.user_id);
+    if (data.zone_ids.length > 0) {
+      const rows = data.zone_ids.map((zone_id) => ({ user_id: data.user_id, zone_id }));
+      const { error } = await supabaseAdmin.from("user_zone_assignments").insert(rows);
+      if (error) throw new Error(error.message);
+    }
+    return { ok: true };
+  });
+
+/** Replace store assignments for a user (admin/ops only). */
+export const setUserStores = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({
+    user_id: z.string().uuid(),
+    store_ids: z.array(z.string().uuid()).max(500),
+  }).parse(i))
+  .handler(async ({ context, data }) => {
+    await assertAdminOrOps(context.userId);
+    await supabaseAdmin.from("store_managers").delete().eq("user_id", data.user_id);
+    if (data.store_ids.length > 0) {
+      const rows = data.store_ids.map((store_id) => ({ user_id: data.user_id, store_id }));
+      const { error } = await supabaseAdmin.from("store_managers").insert(rows);
+      if (error) throw new Error(error.message);
+    }
+    return { ok: true };
+  });
+
+/** Remove an admin user role (does not delete the auth user). */
+export const removeAdminRole = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({
+    user_id: z.string().uuid(),
+    role: z.enum(["admin", "gerente_operaciones", "gerente_tienda", "gerente_zona"]),
+  }).parse(i))
+  .handler(async ({ context, data }) => {
+    const roles = await getUserRoles(context.userId);
+    const isAdmin = roles.includes("admin");
+    const isOps = roles.includes("gerente_operaciones");
+    if (!isAdmin && !isOps) throw new Error("Acceso denegado");
+    if ((data.role === "admin" || data.role === "gerente_operaciones") && !isAdmin)
+      throw new Error("Solo Administrador puede quitar este rol");
+    if (data.role === "admin" && data.user_id === context.userId)
+      throw new Error("No puedes quitarte el rol de Administrador a ti mismo");
+    await supabaseAdmin.from("user_roles").delete()
+      .eq("user_id", data.user_id).eq("role", data.role);
+    if (data.role === "gerente_zona")
+      await supabaseAdmin.from("user_zone_assignments").delete().eq("user_id", data.user_id);
+    if (data.role === "gerente_tienda")
+      await supabaseAdmin.from("store_managers").delete().eq("user_id", data.user_id);
+    return { ok: true };
+  });
+
 export const updateEmployee = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) =>
