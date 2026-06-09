@@ -10,6 +10,12 @@ import {
   deleteEmployee,
   listEmployeeAssignments,
   setEmployeeAssignments,
+  checkAdmin,
+  listAdminUsers,
+  upsertAdminUser,
+  removeAdminRole,
+  setUserZones,
+  setUserStores,
 } from "@/lib/admin.functions";
 import {
   listStores,
@@ -19,13 +25,19 @@ import {
   bulkCreateStores,
 } from "@/lib/stores.functions";
 import {
+  listZones,
+  createZone,
+  updateZone,
+  deleteZone,
+} from "@/lib/zones.functions";
+import {
   beginWebauthnRegistration,
   finishWebauthnRegistration,
   listEmployeeCredentials,
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks } from "@/lib/dashboard.functions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,6 +69,7 @@ import {
 import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
+  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -74,10 +87,20 @@ const ROLE_LABELS: Record<EmployeeRole, string> = {
   seguridad: "Seguridad",
 };
 
+const ADMIN_ROLE_LABELS: Record<string, string> = {
+  admin: "Administrador",
+  gerente_operaciones: "Gerente de Operaciones",
+  gerente_zona: "Gerente de Zona (Admin)",
+  gerente_tienda: "Gerente de Tienda",
+};
+
 function AdminDashboard() {
+  const checkFn = useServerFn(checkAdmin);
+  const { data: access } = useQuery({ queryKey: ["adminAccess"], queryFn: () => checkFn() });
+  const canManageOrg = !!(access?.isAdmin || access?.isOperations);
   return (
     <Tabs defaultValue="dashboard" className="space-y-4">
-      <TabsList className="bg-card border border-border">
+      <TabsList className="bg-card border border-border flex-wrap h-auto">
         <TabsTrigger value="dashboard" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <LayoutDashboard className="h-4 w-4 mr-2" />
           Dashboard
@@ -94,6 +117,18 @@ function AdminDashboard() {
           <StoreIcon className="h-4 w-4 mr-2" />
           Tiendas
         </TabsTrigger>
+        {canManageOrg && (
+          <TabsTrigger value="zones" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+            <MapZoneIcon className="h-4 w-4 mr-2" />
+            Zonas
+          </TabsTrigger>
+        )}
+        {canManageOrg && (
+          <TabsTrigger value="admins" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+            <ShieldCheck className="h-4 w-4 mr-2" />
+            Usuarios admin
+          </TabsTrigger>
+        )}
       </TabsList>
       <TabsContent value="dashboard">
         <DashboardPanel />
@@ -107,6 +142,16 @@ function AdminDashboard() {
       <TabsContent value="stores">
         <StoresPanel />
       </TabsContent>
+      {canManageOrg && (
+        <TabsContent value="zones">
+          <ZonesPanel />
+        </TabsContent>
+      )}
+      {canManageOrg && (
+        <TabsContent value="admins">
+          <AdminUsersPanel isAdmin={!!access?.isAdmin} />
+        </TabsContent>
+      )}
     </Tabs>
   );
 }
