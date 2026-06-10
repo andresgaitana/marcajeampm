@@ -1407,6 +1407,7 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
   const removeFn = useServerFn(removeAdminRole);
   const setZonesFn = useServerFn(setUserZones);
   const setStoresFn = useServerFn(setUserStores);
+  const seedFn = useServerFn(seedZoneManagers);
   const zonesFn = useServerFn(listZones);
   const storesFn = useServerFn(listStores);
   const qc = useQueryClient();
@@ -1484,7 +1485,29 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
           <h2 className="text-xl font-bold text-foreground">Usuarios administrativos</h2>
           <p className="text-sm text-muted-foreground">Gestiona quién puede acceder al panel y qué tiendas/zonas ve</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <div className="flex gap-2">
+          {isAdmin && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!confirm("Crear/actualizar los 10 Gerentes de Zona (contraseña inicial Cambiar123!, PIN 0000)?")) return;
+                try {
+                  const r = await seedFn();
+                  const ok = r.results.filter((x) => x.status === "ok").length;
+                  const err = r.results.filter((x) => x.status !== "ok");
+                  toast.success(`GZ procesados: ${ok}/${r.results.length}`);
+                  if (err.length) toast.error(err.map((e) => `${e.email}: ${e.error}`).join(" | "));
+                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
+                  qc.invalidateQueries({ queryKey: ["employees"] });
+                } catch (e: unknown) {
+                  toast.error(e instanceof Error ? e.message : "Error");
+                }
+              }}
+            >
+              Cargar 10 GZ
+            </Button>
+          )}
+          <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
               <Plus className="h-4 w-4 mr-2" /> Nuevo usuario admin
