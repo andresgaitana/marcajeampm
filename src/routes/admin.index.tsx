@@ -16,6 +16,7 @@ import {
   removeAdminRole,
   setUserZones,
   setUserStores,
+  seedZoneManagers,
 } from "@/lib/admin.functions";
 import {
   listStores,
