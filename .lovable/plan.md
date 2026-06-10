@@ -1,45 +1,57 @@
-## Resumen
-Agregar tres niveles administrativos (Gerente de Tienda, Gerente de Zona, Gerente de Operaciones), introducir el concepto de Zona con tiendas asignadas, y mejorar el Dashboard para ver el comportamiento del horario por persona.
 
-## 1. Base de datos (migración)
+## Objetivo
+Crear los 10 Gerentes de Zona (GZ) con su acceso admin restringido a su zona, y habilitar que un GZ pueda marcar entrada/salida desde cualquier tienda de las zonas que tiene asignadas.
 
-- **Nueva tabla `zones`**: `code`, `name`, `active`.
-- **`stores.zone_id`**: columna nueva (nullable) con FK a `zones`.
-- **Enum `app_role`** ampliado: agregar `gerente_tienda`, `gerente_zona`, `gerente_operaciones` (se mantiene `admin` como super-admin).
-- **Nueva tabla `user_zone_assignments`** (`user_id`, `zone_id`) para vincular Gerentes de Zona a una o más zonas.
-- Funciones SECURITY DEFINER: `is_operations(uid)`, `accessible_store_ids(uid)` que devuelve el conjunto de tiendas visibles según rol (admin/operaciones = todas; gerente_zona = tiendas de sus zonas; gerente_tienda = tiendas de `store_managers`).
-- RLS + GRANTs estándar para las nuevas tablas.
+## 1. Renombrar zonas para que coincidan con la lista oficial
+Las dos zonas con código "FOR_S1" / "FOR_S2" tienen nombre "FOR-S1" / "FOR-S2"; las renombro a **"FOR Sur 1"** y **"FOR Sur 2"** (los códigos no cambian, solo el nombre visible).
 
-## 2. Backend (server functions)
+## 2. Crear 10 usuarios admin (rol `gerente_zona`) y asignar su zona
 
-- `admin.functions.ts`:
-  - Reescribir `getScope()` para usar `accessible_store_ids` y reconocer los nuevos roles.
-  - `checkAdmin` devuelve `{ isAdmin, isOperations, isZoneManager, isStoreManager, storeIds }`.
-  - CRUD de zonas (`listZones`, `createZone`, `updateZone`, `deleteZone`) — solo admin/operaciones.
-  - Asignación de usuarios a zonas (`listZoneManagers`, `addZoneManager`, `removeZoneManager`) similar a `store_managers`.
-- `stores.functions.ts`: `createStore`/`updateStore` aceptan `zone_id`. `listStores` ya filtrará por scope vía la función SQL.
-- `dashboard.functions.ts`:
-  - Nuevo `getEmployeeWeeklyMarks({ employeeId, range })` con rangos: `current_week`, `previous_week`, `current_month`, `payroll` (fechas inicio/fin), entregando por día: marcajes, primera entrada, última salida, horas trabajadas.
-  - `getEmployeeSummary` agrega filtros por rol y rango (Lunes-Domingo).
-  - Métricas de tienda incluyen breakdown por rol.
+Para cada fila se crea el usuario auth con contraseña inicial `Cambiar123!` (el GZ podrá cambiarla luego), se le asigna el rol `gerente_zona` y se vincula a su zona en `user_zone_assignments`:
 
-## 3. UI Admin
+| Zona | GZ | Email |
+|---|---|---|
+| MGA Sur | Carlos Sandoval | carlos.sandoval@ampm.com.ni |
+| MGA Centro | Cristina Maldonado | cristina.maldonado@ampm.com.ni |
+| MGA Norte | Erica Zamora | erica.zamora@ampm.com.ni |
+| MGA Noreste | Engels Castellon | engels.castellon@ampm.com.ni |
+| FOR Sur 1 | Daniel Centeno | daniel.centeno@ampm.com.ni |
+| FOR Occidente | Marcos Zarate | marcos.munoz@ampm.com.ni |
+| FOR Norte | Tania Ruiz | tania.ruiz@ampm.com.ni |
+| FOR Sur 2 | Cristhian Guzman | cristhian.guzman@ampm.com.ni |
+| FOR Centro 2 | Julio Gutierrez | julio.gutierrez@ampm.com.ni |
+| FOR Centro 1 | Yuri Reyes | yuri.reyes@ampm.com.ni |
 
-- **Panel Tiendas**: selector de Zona al crear/editar tienda; columna Zona en la tabla.
-- **Nueva pestaña Zonas** (visible para admin/operaciones): CRUD de zonas + asignar Gerentes de Zona (email).
-- **Panel Tiendas → Gerentes**: ya existe `store_managers`; etiquetar como "Gerente de Tienda".
-- **Nueva pestaña Usuarios admin** (admin/operaciones): listar Gerentes de Operaciones y crear/eliminar (insert en `user_roles`).
-- **Dashboard**:
-  - Tarjetas por rol (Cajero, Agente MBK, Seguridad, etc.) con entradas/salidas hoy.
-  - Tabla por colaborador: días marcados, marcajes totales, horas, último marcaje.
-  - Click en colaborador → modal "Marcaje semanal" con selector de rango (Semana actual / Semana anterior / Mes / Semana planilla con date pickers) y grilla diaria Lun-Dom.
+Con esto cada GZ entra en `/admin` y, gracias a `accessible_store_ids`, solo verá las tiendas de su zona (dashboard, marcajes, colaboradores).
 
-## 4. Acceso
-- Layout `admin.tsx`: permitir entrar si el usuario tiene cualquiera de los roles administrativos (no sólo `admin`).
-- Visibilidad de pestañas según rol (Zonas y Usuarios admin sólo admin/operaciones).
+## 3. Crear el colaborador (employee) GZ para marcar en tienda
+Cada GZ además necesita un registro en `employees` con rol `gerente_zona` y PIN `0000` para marcar. Como un GZ no tiene tienda base, su `store_id` quedará apuntando a una tienda "ancla" de su zona (la primera por código), pero la validación de marcaje no usará ese store_id: usará las zonas asignadas al usuario.
+
+- `employee_code`: GZ01..GZ10
+- `pin_hash`: hash de "0000" (ya tenemos uno calculado)
+- `role`: `gerente_zona`
+
+## 4. Validación de marcaje por zona
+Hoy el flujo de marcaje exige que el empleado pertenezca a la tienda donde se marca. Para el rol `gerente_zona` cambio la regla en `src/lib/attendance.functions.ts`:
+
+- Si el empleado tiene rol `gerente_zona`: aceptar el marcaje si la tienda donde se marca pertenece a alguna de las zonas asignadas al GZ (vía `user_zone_assignments` enlazando con la cuenta admin del GZ por email/`auth_user_id`).
+- El `attendance_record` se guarda con el `store_id` real donde marcó (para que cuente en el dashboard de esa tienda y zona).
+
+Para enlazar el `employee` con su cuenta admin uso una columna nueva `employees.auth_user_id uuid null` (solo se rellena para GZ). Así puedo saber qué zonas tiene asignadas el GZ al momento de marcar.
+
+## 5. Tienda DEFAULT
+No me confirmaste qué hacer con ella. La dejo activa por ahora; cuando me digas la desactivo o elimino.
 
 ## Detalles técnicos
-- Semana calendario ISO (Lunes-Domingo) calculada en server.
-- "Semana planilla" = parámetros `from`/`to` enviados por la UI.
-- Operaciones y Admin tienen permisos equivalentes salvo gestión de roles admin (sólo admin general).
-- Reescribir `getScope` como función SQL reutilizada por todos los server-fns que filtran por tienda evita duplicación.
+- **Migración SQL** (un solo archivo):
+  1. `UPDATE zones SET name='FOR Sur 1' WHERE code='FOR_S1'` y equivalente para S2.
+  2. `ALTER TABLE employees ADD COLUMN auth_user_id uuid` (sin FK a auth.users para no tocar ese esquema; índice único parcial).
+  3. Insertar 10 usuarios en `auth.users` vía función admin no es posible desde SQL puro — se hace desde una server function (`createGZBatch`) que llama a `supabaseAdmin.auth.admin.createUser` por cada GZ, luego inserta rol, zona y employee.
+- **Nueva server fn** `src/lib/admin.functions.ts → seedZoneManagers()`: idempotente (si el email ya existe, reusa el user_id; si el employee_code ya existe, lo actualiza). La ejecuto una vez desde el panel Admin con un botón "Cargar 10 GZ" en la pestaña Usuarios admin (o vía un endpoint puntual).
+- **`attendance.functions.ts`**: en el flujo `recordAttendance` (o equivalente), antes de insertar, si `employee.role === 'gerente_zona'` y `employee.auth_user_id` está presente, validar `EXISTS (SELECT 1 FROM stores s JOIN user_zone_assignments uza ON uza.zone_id = s.zone_id WHERE s.id = :store_id AND uza.user_id = employee.auth_user_id)`. Si no, rechazar con "Esta tienda no pertenece a tu zona".
+- **PIN**: se mantiene `0000` por ahora (sin cambios).
+
+## Lo que NO se hace en este paso
+- Cambiar PIN de tiendas (se mantiene 0000).
+- Tocar tienda DEFAULT.
+- UI para que el admin cambie las zonas de un GZ desde una pantalla nueva (ya existe en pestaña "Usuarios admin").
