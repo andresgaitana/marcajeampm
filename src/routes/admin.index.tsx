@@ -518,6 +518,7 @@ function EmployeesPanel() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
