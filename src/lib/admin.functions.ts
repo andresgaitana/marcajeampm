@@ -358,6 +358,115 @@ export const deleteEmployee = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// =====================================================================
+// Seed: 10 Gerentes de Zona (admin login + employee record + zone link)
+// =====================================================================
+
+const GZ_SEED: Array<{ email: string; name: string; zoneCode: string; code: string }> = [
+  { email: "carlos.sandoval@ampm.com.ni",    name: "Carlos Sandoval",     zoneCode: "MGA_SUR",      code: "GZ01" },
+  { email: "cristina.maldonado@ampm.com.ni", name: "Cristina Maldonado",  zoneCode: "MGA_CENTRO",   code: "GZ02" },
+  { email: "erica.zamora@ampm.com.ni",       name: "Erica Zamora",        zoneCode: "MGA_NORTE",    code: "GZ03" },
+  { email: "engels.castellon@ampm.com.ni",   name: "Engels Castellon",    zoneCode: "MGA_NORESTE",  code: "GZ04" },
+  { email: "daniel.centeno@ampm.com.ni",     name: "Daniel Centeno",      zoneCode: "FOR_S1",       code: "GZ05" },
+  { email: "marcos.munoz@ampm.com.ni",       name: "Marcos Zarate",       zoneCode: "FOR_OCCIDENTE",code: "GZ06" },
+  { email: "tania.ruiz@ampm.com.ni",         name: "Tania Ruiz",          zoneCode: "FOR_NORTE",    code: "GZ07" },
+  { email: "cristhian.guzman@ampm.com.ni",   name: "Cristhian Guzman",    zoneCode: "FOR_S2",       code: "GZ08" },
+  { email: "julio.gutierrez@ampm.com.ni",    name: "Julio Gutierrez",     zoneCode: "FOR_CENTRO_2", code: "GZ09" },
+  { email: "yuri.reyes@ampm.com.ni",         name: "Yuri Reyes",          zoneCode: "FOR_CENTRO_1", code: "GZ10" },
+];
+
+/** Find an auth user by email by paginating listUsers. */
+async function findAuthUserId(email: string): Promise<string | null> {
+  let page = 1;
+  while (page < 20) {
+    const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
+    const found = list?.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
+    if (found) return found.id;
+    if (!list?.users || list.users.length < 200) return null;
+    page++;
+  }
+  return null;
+}
+
+/**
+ * Idempotent: creates/updates the 10 Gerentes de Zona.
+ * - auth user (password Cambiar123! if new)
+ * - role gerente_zona
+ * - zone assignment in user_zone_assignments
+ * - employee record with PIN 0000, role gerente_zona, anchored to first store of the zone
+ * - employee_store_assignments with every store of the zone
+ */
+export const seedZoneManagers = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertSuperAdmin(context.userId);
+    const pinHash = hashPin("0000");
+    const results: Array<{ email: string; status: string; error?: string }> = [];
+
+    for (const gz of GZ_SEED) {
+      try {
+        // 1) Resolve zone
+        const { data: zone } = await supabaseAdmin
+          .from("zones").select("id").eq("code", gz.zoneCode).maybeSingle();
+        if (!zone) { results.push({ email: gz.email, status: "skip", error: `zona ${gz.zoneCode} no existe` }); continue; }
+
+        // 2) Stores of that zone
+        const { data: zoneStores } = await supabaseAdmin
+          .from("stores").select("id, code").eq("zone_id", zone.id).order("code");
+        if (!zoneStores || zoneStores.length === 0) {
+          results.push({ email: gz.email, status: "skip", error: `zona ${gz.zoneCode} sin tiendas` }); continue;
+        }
+        const anchorStoreId = zoneStores[0].id;
+
+        // 3) Find or create auth user
+        let userId = await findAuthUserId(gz.email);
+        if (!userId) {
+          const { data: created, error: cErr } = await supabaseAdmin.auth.admin.createUser({
+            email: gz.email, password: "Cambiar123!", email_confirm: true,
+          });
+          if (cErr || !created.user) { results.push({ email: gz.email, status: "error", error: cErr?.message ?? "no se creó" }); continue; }
+          userId = created.user.id;
+        }
+
+        // 4) Role gerente_zona (idempotent)
+        await supabaseAdmin.from("user_roles").insert({ user_id: userId, role: "gerente_zona" })
+          .then(({ error }) => { if (error && !error.message.match(/duplicate|unique/i)) throw new Error(error.message); });
+
+        // 5) Zone assignment
+        await supabaseAdmin.from("user_zone_assignments")
+          .upsert({ user_id: userId, zone_id: zone.id }, { onConflict: "user_id,zone_id" });
+
+        // 6) Employee record (upsert by employee_code)
+        const { data: existingEmp } = await supabaseAdmin
+          .from("employees").select("id").eq("employee_code", gz.code).maybeSingle();
+        let employeeId: string;
+        if (existingEmp) {
+          await supabaseAdmin.from("employees").update({
+            full_name: gz.name, role: "gerente_zona", store_id: anchorStoreId, active: true,
+          }).eq("id", existingEmp.id);
+          employeeId = existingEmp.id;
+        } else {
+          const { data: newEmp, error: eErr } = await supabaseAdmin.from("employees").insert({
+            employee_code: gz.code, full_name: gz.name, role: "gerente_zona",
+            store_id: anchorStoreId, pin_hash: pinHash, active: true,
+          }).select("id").single();
+          if (eErr || !newEmp) { results.push({ email: gz.email, status: "error", error: eErr?.message ?? "no se creó empleado" }); continue; }
+          employeeId = newEmp.id;
+        }
+
+        // 7) Store assignments = all stores of the zone
+        await supabaseAdmin.from("employee_store_assignments").delete().eq("employee_id", employeeId);
+        const rows = zoneStores.map((s) => ({ employee_id: employeeId, store_id: s.id }));
+        await supabaseAdmin.from("employee_store_assignments").insert(rows);
+
+        results.push({ email: gz.email, status: "ok" });
+      } catch (e) {
+        results.push({ email: gz.email, status: "error", error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { results };
+  });
+
 export const listAttendance = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) =>
