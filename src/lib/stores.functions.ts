@@ -12,6 +12,27 @@ async function assertAdminOrOps(userId: string) {
     throw new Error("Acceso denegado: solo Admin/Gerente de Operaciones");
 }
 
+/**
+ * Admin/Ops always allowed; GZ allowed if the store belongs to a zone assigned to them.
+ * Used for GT (store_managers) management — GZ can add/remove GT in their own zone.
+ */
+async function assertCanManageStore(userId: string, storeId: string) {
+  const { data: roles } = await supabaseAdmin
+    .from("user_roles").select("role").eq("user_id", userId);
+  const set = new Set((roles ?? []).map((r) => r.role as string));
+  if (set.has("admin") || set.has("gerente_operaciones")) return;
+  if (set.has("gerente_zona")) {
+    const { data: store } = await supabaseAdmin
+      .from("stores").select("zone_id").eq("id", storeId).maybeSingle();
+    if (!store?.zone_id) throw new Error("Tienda sin zona asignada");
+    const { data: assign } = await supabaseAdmin
+      .from("user_zone_assignments").select("zone_id")
+      .eq("user_id", userId).eq("zone_id", store.zone_id).maybeSingle();
+    if (assign) return;
+  }
+  throw new Error("Acceso denegado: la tienda no pertenece a tu zona");
+}
+
 /** List stores: admin sees all, manager sees only assigned. */
 export const listStores = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
