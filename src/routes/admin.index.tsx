@@ -17,6 +17,7 @@ import {
   setUserZones,
   setUserStores,
   seedZoneManagers,
+  seedOperationsManager,
 } from "@/lib/admin.functions";
 import {
   listStores,
@@ -1408,6 +1409,7 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
   const setZonesFn = useServerFn(setUserZones);
   const setStoresFn = useServerFn(setUserStores);
   const seedFn = useServerFn(seedZoneManagers);
+  const seedGoFn = useServerFn(seedOperationsManager);
   const zonesFn = useServerFn(listZones);
   const storesFn = useServerFn(listStores);
   const qc = useQueryClient();
@@ -1505,6 +1507,24 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
               }}
             >
               Cargar 10 GZ
+            </Button>
+          )}
+          {isAdmin && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!confirm("Crear Marco Lopez como Gerente de Operaciones (contraseña inicial Cambiar123!)?")) return;
+                try {
+                  const r = await seedGoFn();
+                  if (!r.ok) { toast.error(r.error); return; }
+                  toast.success(`GO creado: ${r.email} (clave inicial: ${r.password})`);
+                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
+                } catch (e: unknown) {
+                  toast.error(e instanceof Error ? e.message : "Error");
+                }
+              }}
+            >
+              Crear Marco (GO)
             </Button>
           )}
           <Dialog open={open} onOpenChange={setOpen}>

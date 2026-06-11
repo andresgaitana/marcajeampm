@@ -12,6 +12,27 @@ async function assertAdminOrOps(userId: string) {
     throw new Error("Acceso denegado: solo Admin/Gerente de Operaciones");
 }
 
+/**
+ * Admin/Ops always allowed; GZ allowed if the store belongs to a zone assigned to them.
+ * Used for GT (store_managers) management — GZ can add/remove GT in their own zone.
+ */
+async function assertCanManageStore(userId: string, storeId: string) {
+  const { data: roles } = await supabaseAdmin
+    .from("user_roles").select("role").eq("user_id", userId);
+  const set = new Set((roles ?? []).map((r) => r.role as string));
+  if (set.has("admin") || set.has("gerente_operaciones")) return;
+  if (set.has("gerente_zona")) {
+    const { data: store } = await supabaseAdmin
+      .from("stores").select("zone_id").eq("id", storeId).maybeSingle();
+    if (!store?.zone_id) throw new Error("Tienda sin zona asignada");
+    const { data: assign } = await supabaseAdmin
+      .from("user_zone_assignments").select("zone_id")
+      .eq("user_id", userId).eq("zone_id", store.zone_id).maybeSingle();
+    if (assign) return;
+  }
+  throw new Error("Acceso denegado: la tienda no pertenece a tu zona");
+}
+
 /** List stores: admin sees all, manager sees only assigned. */
 export const listStores = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
@@ -157,7 +178,7 @@ export const listStoreManagers = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ storeId: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdminOrOps(context.userId);
+    await assertCanManageStore(context.userId, data.storeId);
     const { data: rows } = await supabaseAdmin
       .from("store_managers").select("id, user_id, created_at").eq("store_id", data.storeId);
     const list = rows ?? [];
@@ -178,7 +199,7 @@ export const addStoreManager = createServerFn({ method: "POST" })
     password: z.string().min(8).max(72).optional(),
   }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdminOrOps(context.userId);
+    await assertCanManageStore(context.userId, data.storeId);
 
     // Find existing user by email (paginate up to a reasonable size)
     let userId: string | null = null;
@@ -212,7 +233,11 @@ export const removeStoreManager = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdminOrOps(context.userId);
+    // Look up which store this assignment belongs to, then check scope
+    const { data: row } = await supabaseAdmin
+      .from("store_managers").select("store_id").eq("id", data.id).maybeSingle();
+    if (!row) throw new Error("Asignación no encontrada");
+    await assertCanManageStore(context.userId, row.store_id);
     const { error } = await supabaseAdmin.from("store_managers").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
