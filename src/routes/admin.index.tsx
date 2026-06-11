@@ -17,6 +17,7 @@ import {
   setUserZones,
   setUserStores,
   seedZoneManagers,
+  seedOperationsManager,
 } from "@/lib/admin.functions";
 import {
   listStores,
