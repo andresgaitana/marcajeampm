@@ -531,3 +531,34 @@ export const setEmployeeAssignments = createServerFn({ method: "POST" })
     }
     return { ok: true };
   });
+
+// =====================================================================
+// Seed: Gerente de Operaciones (Marco Lopez)
+// =====================================================================
+
+/** Idempotent: provisions Marco Lopez as Gerente de Operaciones. */
+export const seedOperationsManager = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertSuperAdmin(context.userId);
+    const email = "marco.lopez@ampmcentroamerica.com";
+    const name = "Marco Lopez";
+    try {
+      let userId = await findAuthUserId(email);
+      if (!userId) {
+        const { data: created, error: cErr } = await supabaseAdmin.auth.admin.createUser({
+          email, password: "Cambiar123!", email_confirm: true,
+          user_metadata: { full_name: name },
+        });
+        if (cErr || !created.user) return { ok: false as const, error: cErr?.message ?? "no se pudo crear" };
+        userId = created.user.id;
+      }
+      const { error: rErr } = await supabaseAdmin
+        .from("user_roles").insert({ user_id: userId, role: "gerente_operaciones" });
+      if (rErr && !rErr.message.match(/duplicate|unique/i))
+        return { ok: false as const, error: rErr.message };
+      return { ok: true as const, email, password: "Cambiar123!" };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
