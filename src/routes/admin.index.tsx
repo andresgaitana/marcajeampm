@@ -1509,6 +1509,24 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
               Cargar 10 GZ
             </Button>
           )}
+          {isAdmin && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!confirm("Crear Marco Lopez como Gerente de Operaciones (contraseña inicial Cambiar123!)?")) return;
+                try {
+                  const r = await seedGoFn();
+                  if (!r.ok) { toast.error(r.error); return; }
+                  toast.success(`GO creado: ${r.email} (clave inicial: ${r.password})`);
+                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
+                } catch (e: unknown) {
+                  toast.error(e instanceof Error ? e.message : "Error");
+                }
+              }}
+            >
+              Crear Marco (GO)
+            </Button>
+          )}
           <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
