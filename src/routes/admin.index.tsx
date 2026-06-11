@@ -1409,6 +1409,7 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
   const setZonesFn = useServerFn(setUserZones);
   const setStoresFn = useServerFn(setUserStores);
   const seedFn = useServerFn(seedZoneManagers);
+  const seedGoFn = useServerFn(seedOperationsManager);
   const zonesFn = useServerFn(listZones);
   const storesFn = useServerFn(listStores);
   const qc = useQueryClient();
