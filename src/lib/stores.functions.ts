@@ -178,7 +178,7 @@ export const listStoreManagers = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ storeId: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdminOrOps(context.userId);
+    await assertCanManageStore(context.userId, data.storeId);
     const { data: rows } = await supabaseAdmin
       .from("store_managers").select("id, user_id, created_at").eq("store_id", data.storeId);
     const list = rows ?? [];
@@ -199,7 +199,7 @@ export const addStoreManager = createServerFn({ method: "POST" })
     password: z.string().min(8).max(72).optional(),
   }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdminOrOps(context.userId);
+    await assertCanManageStore(context.userId, data.storeId);
 
     // Find existing user by email (paginate up to a reasonable size)
     let userId: string | null = null;
@@ -233,7 +233,11 @@ export const removeStoreManager = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdminOrOps(context.userId);
+    // Look up which store this assignment belongs to, then check scope
+    const { data: row } = await supabaseAdmin
+      .from("store_managers").select("store_id").eq("id", data.id).maybeSingle();
+    if (!row) throw new Error("Asignación no encontrada");
+    await assertCanManageStore(context.userId, row.store_id);
     const { error } = await supabaseAdmin.from("store_managers").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
