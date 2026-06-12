@@ -1413,6 +1413,7 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
   const seedFn = useServerFn(seedZoneManagers);
   const seedGoFn = useServerFn(seedOperationsManager);
   const seedGtFn = useServerFn(seedStoreManagers);
+  const seedExtraFn = useServerFn(seedExtraSuperAdmins);
   const zonesFn = useServerFn(listZones);
   const storesFn = useServerFn(listStores);
   const qc = useQueryClient();
