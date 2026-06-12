@@ -562,3 +562,165 @@ export const seedOperationsManager = createServerFn({ method: "POST" })
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+// =====================================================================
+// Seed: Gerentes de Tienda (GT) — 1 GT por tienda, con email genérico
+// Carga lista oficial de Contacto_GT-GZ.xlsx (zonas + correos por tienda)
+// =====================================================================
+
+const GT_SEED: Array<{ storeCode: string; zoneCode: string; gtEmail: string }> = [
+  { storeCode: "A01", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm01@ampm.com.ni" },
+  { storeCode: "A02", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm02@ampm.com.ni" },
+  { storeCode: "A03", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm03@ampm.com.ni" },
+  { storeCode: "A04", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm04@ampm.com.ni" },
+  { storeCode: "A05", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm05@ampm.com.ni" },
+  { storeCode: "A06", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm06@ampm.com.ni" },
+  { storeCode: "A07", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm07@ampm.com.ni" },
+  { storeCode: "A08", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm08@ampm.com.ni" },
+  { storeCode: "A09", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm09@ampm.com.ni" },
+  { storeCode: "A10", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm10@ampm.com.ni" },
+  { storeCode: "A12", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm12@ampm.com.ni" },
+  { storeCode: "A13", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm13@ampm.com.ni" },
+  { storeCode: "A14", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm14@ampm.com.ni" },
+  { storeCode: "A15", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm15@ampm.com.ni" },
+  { storeCode: "A16", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm16@ampm.com.ni" },
+  { storeCode: "A18", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm18@ampm.com.ni" },
+  { storeCode: "A19", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm19@ampm.com.ni" },
+  { storeCode: "A20", zoneCode: "FOR_S1", gtEmail: "jefe.ampm20@ampm.com.ni" },
+  { storeCode: "A21", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm21@ampm.com.ni" },
+  { storeCode: "A23", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm23@ampm.com.ni" },
+  { storeCode: "A25", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm25@ampm.com.ni" },
+  { storeCode: "A26", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm26@ampm.com.ni" },
+  { storeCode: "A27", zoneCode: "FOR_S1", gtEmail: "jefe.ampm27@ampm.com.ni" },
+  { storeCode: "A28", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm28@ampm.com.ni" },
+  { storeCode: "A29", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm29@ampm.com.ni" },
+  { storeCode: "A30", zoneCode: "FOR_S2", gtEmail: "jefe.ampm30@ampm.com.ni" },
+  { storeCode: "A31", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm31@ampm.com.ni" },
+  { storeCode: "A32", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm32@ampm.com.ni" },
+  { storeCode: "A33", zoneCode: "FOR_S1", gtEmail: "jefe.ampm33@ampm.com.ni" },
+  { storeCode: "A34", zoneCode: "FOR_S1", gtEmail: "jefe.ampm34@ampm.com.ni" },
+  { storeCode: "A35", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm35@ampm.com.ni" },
+  { storeCode: "A36", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm36@ampm.com.ni" },
+  { storeCode: "A37", zoneCode: "FOR_S2", gtEmail: "jefe.ampm37@ampm.com.ni" },
+  { storeCode: "A38", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm38@ampm.com.ni" },
+  { storeCode: "A39", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm39@ampm.com.ni" },
+  { storeCode: "A40", zoneCode: "FOR_S2", gtEmail: "jefe.ampm40@ampm.com.ni" },
+  { storeCode: "A41", zoneCode: "FOR_S2", gtEmail: "jefe.ampm41@ampm.com.ni" },
+  { storeCode: "A42", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm42@ampm.com.ni" },
+  { storeCode: "A43", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm43@ampm.com.ni" },
+  { storeCode: "A44", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm44@ampm.com.ni" },
+  { storeCode: "A45", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm45@ampm.com.ni" },
+  { storeCode: "A46", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm46@ampm.com.ni" },
+  { storeCode: "A47", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm47@ampm.com.ni" },
+  { storeCode: "A48", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm48@ampm.com.ni" },
+  { storeCode: "A49", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm49@ampm.com.ni" },
+  { storeCode: "A50", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm50@ampm.com.ni" },
+  { storeCode: "A51", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm51@ampm.com.ni" },
+  { storeCode: "A52", zoneCode: "FOR_S1", gtEmail: "jefe.ampm52@ampm.com.ni" },
+  { storeCode: "A53", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm53@ampm.com.ni" },
+  { storeCode: "A54", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm54@ampm.com.ni" },
+  { storeCode: "A55", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm55@ampm.com.ni" },
+  { storeCode: "A56", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm56@ampm.com.ni" },
+  { storeCode: "A57", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm57@ampm.com.ni" },
+  { storeCode: "A58", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm58@ampm.com.ni" },
+  { storeCode: "A59", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm59@ampm.com.ni" },
+  { storeCode: "A60", zoneCode: "FOR_S2", gtEmail: "jefe.ampm60@ampm.com.ni" },
+  { storeCode: "A61", zoneCode: "FOR_S2", gtEmail: "jefe.ampm61@ampm.com.ni" },
+  { storeCode: "A62", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm62@ampm.com.ni" },
+  { storeCode: "A63", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm63@ampm.com.ni" },
+  { storeCode: "A64", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm64@ampm.com.ni" },
+  { storeCode: "A65", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm65@ampm.com.ni" },
+  { storeCode: "A66", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm66@ampm.com.ni" },
+  { storeCode: "A67", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm67@ampm.com.ni" },
+  { storeCode: "A68", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm68@ampm.com.ni" },
+  { storeCode: "A69", zoneCode: "MGA_CENTRO", gtEmail: "jefe.ampm69@ampm.com.ni" },
+  { storeCode: "A70", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm70@ampm.com.ni" },
+  { storeCode: "A71", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm71@ampm.com.ni" },
+  { storeCode: "A72", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm72@ampm.com.ni" },
+  { storeCode: "A73", zoneCode: "FOR_S1", gtEmail: "jefe.ampm73@ampm.com.ni" },
+  { storeCode: "A74", zoneCode: "FOR_S1", gtEmail: "jefe.ampm74@ampm.com.ni" },
+  { storeCode: "A75", zoneCode: "FOR_S1", gtEmail: "jefe.ampm75@ampm.com.ni" },
+  { storeCode: "A76", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm76@ampm.com.ni" },
+  { storeCode: "A77", zoneCode: "FOR_NORTE", gtEmail: "jefe.ampm77@ampm.com.ni" },
+  { storeCode: "A78", zoneCode: "FOR_S1", gtEmail: "jefe.ampm78@ampm.com.ni" },
+  { storeCode: "A79", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm79@ampm.com.ni" },
+  { storeCode: "A80", zoneCode: "FOR_CENTRO_2", gtEmail: "jefe.ampm80@ampm.com.ni" },
+  { storeCode: "A81", zoneCode: "MGA_NORTE", gtEmail: "jefe.ampm81@ampm.com.ni" },
+  { storeCode: "A82", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm82@ampm.com.ni" },
+  { storeCode: "A83", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm83@ampm.com.ni" },
+  { storeCode: "A84", zoneCode: "FOR_S2", gtEmail: "jefe.ampm84@ampm.com.ni" },
+  { storeCode: "A85", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm85@ampm.com.ni" },
+  { storeCode: "A86", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm86@ampm.com.ni" },
+  { storeCode: "A87", zoneCode: "FOR_CENTRO_1", gtEmail: "jefe.ampm87@ampm.com.ni" },
+  { storeCode: "A88", zoneCode: "MGA_NORESTE", gtEmail: "jefe.ampm88@ampm.com.ni" },
+  { storeCode: "A89", zoneCode: "FOR_S1", gtEmail: "jefe.ampm89@ampm.com.ni" },
+  { storeCode: "A90", zoneCode: "FOR_OCCIDENTE", gtEmail: "jefe.ampm90@ampm.com.ni" },
+  { storeCode: "A91", zoneCode: "MGA_SUR", gtEmail: "jefe.ampm91@ampm.com.ni" },
+];
+
+/**
+ * Idempotent: por cada tienda en GT_SEED,
+ *  1) corrige stores.zone_id según el archivo,
+ *  2) crea (si no existe) el usuario auth del GT con password Cambiar123!,
+ *  3) asigna rol gerente_tienda (idempotente),
+ *  4) hace upsert en store_managers (user_id, store_id).
+ */
+export const seedStoreManagers = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertSuperAdmin(context.userId);
+
+    // Pre-cargar zonas y tiendas
+    const { data: zones } = await supabaseAdmin.from("zones").select("id, code");
+    const zoneByCode = new Map((zones ?? []).map((z) => [z.code, z.id as string]));
+    const { data: stores } = await supabaseAdmin.from("stores").select("id, code, zone_id");
+    const storeByCode = new Map((stores ?? []).map((s) => [s.code, s]));
+
+    // Cache GT email -> user_id para no recrear duplicados
+    const userByEmail = new Map<string, string>();
+
+    const results: Array<{ storeCode: string; status: string; error?: string }> = [];
+
+    for (const it of GT_SEED) {
+      try {
+        const store = storeByCode.get(it.storeCode);
+        if (!store) { results.push({ storeCode: it.storeCode, status: "skip", error: "tienda no existe" }); continue; }
+        const zoneId = zoneByCode.get(it.zoneCode);
+        if (!zoneId) { results.push({ storeCode: it.storeCode, status: "skip", error: `zona ${it.zoneCode} no existe` }); continue; }
+
+        // 1) Update zone_id si difiere
+        if (store.zone_id !== zoneId) {
+          const { error: uErr } = await supabaseAdmin.from("stores")
+            .update({ zone_id: zoneId }).eq("id", store.id);
+          if (uErr) throw new Error("zona: " + uErr.message);
+        }
+
+        // 2) Auth user GT
+        let userId = userByEmail.get(it.gtEmail) ?? null;
+        if (!userId) userId = await findAuthUserId(it.gtEmail);
+        if (!userId) {
+          const { data: created, error: cErr } = await supabaseAdmin.auth.admin.createUser({
+            email: it.gtEmail, password: "Cambiar123!", email_confirm: true,
+          });
+          if (cErr || !created.user) throw new Error("auth: " + (cErr?.message ?? "no se creó"));
+          userId = created.user.id;
+        }
+        userByEmail.set(it.gtEmail, userId);
+
+        // 3) Rol gerente_tienda (idempotente)
+        const { error: rErr } = await supabaseAdmin.from("user_roles")
+          .insert({ user_id: userId, role: "gerente_tienda" });
+        if (rErr && !rErr.message.match(/duplicate|unique/i)) throw new Error("rol: " + rErr.message);
+
+        // 4) store_managers (idempotente)
+        const { error: smErr } = await supabaseAdmin.from("store_managers")
+          .upsert({ user_id: userId, store_id: store.id }, { onConflict: "user_id,store_id" });
+        if (smErr) throw new Error("store_managers: " + smErr.message);
+
+        results.push({ storeCode: it.storeCode, status: "ok" });
+      } catch (e) {
+        results.push({ storeCode: it.storeCode, status: "error", error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { results };
+  });
