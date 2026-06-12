@@ -19,6 +19,7 @@ import {
   seedZoneManagers,
   seedOperationsManager,
   seedStoreManagers,
+  seedExtraSuperAdmins,
 } from "@/lib/admin.functions";
 import {
   listStores,
@@ -1412,6 +1413,7 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
   const seedFn = useServerFn(seedZoneManagers);
   const seedGoFn = useServerFn(seedOperationsManager);
   const seedGtFn = useServerFn(seedStoreManagers);
+  const seedExtraFn = useServerFn(seedExtraSuperAdmins);
   const zonesFn = useServerFn(listZones);
   const storesFn = useServerFn(listStores);
   const qc = useQueryClient();
@@ -1527,6 +1529,26 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
               }}
             >
               Crear Marco (GO)
+            </Button>
+          )}
+          {isAdmin && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!confirm("Crear Vilma Berrios (RRHH) y Rodolfo Castillo (Gerente País) como Super Admin (contraseña inicial Cambiar123!)?")) return;
+                try {
+                  const r = await seedExtraFn();
+                  const ok = r.results.filter((x) => x.status === "ok").length;
+                  const err = r.results.filter((x) => x.status !== "ok");
+                  toast.success(`Super Admins procesados: ${ok}/${r.results.length} (clave inicial: ${r.password})`);
+                  if (err.length) toast.error(err.map((e) => `${e.email}: ${e.error}`).join(" | "));
+                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
+                } catch (e: unknown) {
+                  toast.error(e instanceof Error ? e.message : "Error");
+                }
+              }}
+            >
+              Crear Super Admins (Vilma + Rodolfo)
             </Button>
           )}
           {isAdmin && (

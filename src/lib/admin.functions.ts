@@ -564,6 +564,43 @@ export const seedOperationsManager = createServerFn({ method: "POST" })
   });
 
 // =====================================================================
+// Seed: Super Admins adicionales (RRHH y Gerente de País)
+// =====================================================================
+const EXTRA_SUPER_ADMINS: Array<{ email: string; name: string }> = [
+  { email: "vilma.berrios@ampmcentroamerica.com", name: "Vilma Berrios" },
+  { email: "rodolfo.castillo@ampmcentroamerica.com", name: "Rodolfo Castillo" },
+];
+
+export const seedExtraSuperAdmins = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertSuperAdmin(context.userId);
+    const results: Array<{ email: string; status: "ok" | "error"; error?: string }> = [];
+    for (const u of EXTRA_SUPER_ADMINS) {
+      try {
+        let userId = await findAuthUserId(u.email);
+        if (!userId) {
+          const { data: created, error: cErr } = await supabaseAdmin.auth.admin.createUser({
+            email: u.email, password: "Cambiar123!", email_confirm: true,
+            user_metadata: { full_name: u.name },
+          });
+          if (cErr || !created.user) { results.push({ email: u.email, status: "error", error: cErr?.message ?? "no se pudo crear" }); continue; }
+          userId = created.user.id;
+        }
+        const { error: rErr } = await supabaseAdmin
+          .from("user_roles").insert({ user_id: userId, role: "admin" });
+        if (rErr && !rErr.message.match(/duplicate|unique/i)) {
+          results.push({ email: u.email, status: "error", error: rErr.message }); continue;
+        }
+        results.push({ email: u.email, status: "ok" });
+      } catch (e) {
+        results.push({ email: u.email, status: "error", error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { results, password: "Cambiar123!" };
+  });
+
+// =====================================================================
 // Seed: Gerentes de Tienda (GT) — 1 GT por tienda, con email genérico
 // Carga lista oficial de Contacto_GT-GZ.xlsx (zonas + correos por tienda)
 // =====================================================================

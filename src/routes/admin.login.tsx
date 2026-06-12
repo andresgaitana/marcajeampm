@@ -5,9 +5,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ShieldCheck, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { claimFirstAdmin, checkAdmin } from "@/lib/admin.functions";
+import logoAmpm from "@/assets/logo-ampm.png.asset.json";
 
 export const Route = createFileRoute("/admin/login")({
   head: () => ({ meta: [{ title: "Admin · Iniciar sesión" }] }),
@@ -76,9 +77,7 @@ function AdminLogin() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-secondary to-background p-4">
       <div className="w-full max-w-md bg-card rounded-3xl shadow-[var(--shadow-soft)] border border-border p-8">
         <div className="text-center mb-6">
-          <div className="mx-auto h-14 w-14 rounded-2xl bg-[var(--gradient-brand)] flex items-center justify-center mb-3">
-            <ShieldCheck className="h-8 w-8 text-primary-foreground" />
-          </div>
+          <img src={logoAmpm.url} alt="AM/PM Centroamérica" className="mx-auto h-16 w-auto mb-3" />
           <h1 className="text-2xl font-bold text-foreground">Panel de Administración</h1>
           <p className="text-sm text-muted-foreground mt-1">
             {mode === "login" ? "Inicia sesión para continuar" : "Crea tu cuenta de administrador"}
