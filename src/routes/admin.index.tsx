@@ -1529,6 +1529,27 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
               Crear Marco (GO)
             </Button>
           )}
+          {isAdmin && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!confirm("Cargar Gerentes de Tienda desde el archivo oficial (87 tiendas, contraseña inicial Cambiar123!)? También corrige la zona de cada tienda.")) return;
+                try {
+                  const r = await seedGtFn();
+                  const ok = r.results.filter((x) => x.status === "ok").length;
+                  const err = r.results.filter((x) => x.status !== "ok");
+                  toast.success(`GT procesados: ${ok}/${r.results.length}`);
+                  if (err.length) toast.error(err.map((e) => `${e.storeCode}: ${e.error}`).join(" | "));
+                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
+                  qc.invalidateQueries({ queryKey: ["stores"] });
+                } catch (e: unknown) {
+                  toast.error(e instanceof Error ? e.message : "Error");
+                }
+              }}
+            >
+              Cargar GT (87)
+            </Button>
+          )}
           <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
