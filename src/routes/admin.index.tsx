@@ -19,6 +19,7 @@ import {
   seedZoneManagers,
   seedOperationsManager,
   seedStoreManagers,
+  seedExtraSuperAdmins,
 } from "@/lib/admin.functions";
 import {
   listStores,
