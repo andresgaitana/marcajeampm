@@ -717,6 +717,35 @@ export const seedStoreManagers = createServerFn({ method: "POST" })
           .upsert({ user_id: userId, store_id: store.id }, { onConflict: "user_id,store_id" });
         if (smErr) throw new Error("store_managers: " + smErr.message);
 
+        // 5) employees (colaborador "Gerente de Tienda" para que pueda marcar asistencia)
+        const empCode = `GT-${it.storeCode}`;
+        const { data: existingEmp } = await supabaseAdmin
+          .from("employees").select("id").eq("employee_code", empCode).maybeSingle();
+        let employeeId = existingEmp?.id as string | undefined;
+        if (!employeeId) {
+          const { data: emp, error: eErr } = await supabaseAdmin.from("employees")
+            .insert({
+              employee_code: empCode,
+              full_name: `Gerente Tienda ${it.storeCode}`,
+              role: "gerente",
+              store_id: store.id,
+              pin_hash: hashPin("1234"),
+              active: true,
+            })
+            .select("id").single();
+          if (eErr) throw new Error("employees: " + eErr.message);
+          employeeId = emp.id;
+        } else {
+          // Mantener tienda principal sincronizada
+          await supabaseAdmin.from("employees")
+            .update({ store_id: store.id, active: true }).eq("id", employeeId);
+        }
+
+        // 6) employee_store_assignments (idempotente)
+        const { error: esaErr } = await supabaseAdmin.from("employee_store_assignments")
+          .upsert({ employee_id: employeeId, store_id: store.id }, { onConflict: "employee_id,store_id" });
+        if (esaErr) throw new Error("employee_store_assignments: " + esaErr.message);
+
         results.push({ storeCode: it.storeCode, status: "ok" });
       } catch (e) {
         results.push({ storeCode: it.storeCode, status: "error", error: e instanceof Error ? e.message : String(e) });
