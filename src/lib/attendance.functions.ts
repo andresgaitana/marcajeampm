@@ -7,6 +7,21 @@ import { verifyPin } from "./pin.server";
 import { verifyPassword } from "./password.server";
 import { haversineMeters } from "./geo";
 
+/**
+ * Build candidate employee_code lookups from user input. The phone keypad
+ * makes the "-" hard to type, so accept both "GTA91" and "GT-A91", and any
+ * lower/upper case mix. Returns a small array of exact-match candidates.
+ */
+function codeCandidates(raw: string): string[] {
+  const cleaned = raw.toUpperCase().replace(/[^A-Z0-9-]/g, "");
+  const noDash = cleaned.replace(/-/g, "");
+  const set = new Set<string>([cleaned, noDash]);
+  // Insert dash between leading letters and the rest (e.g. GTA91 -> GT-A91)
+  const m = noDash.match(/^([A-Z]+)([0-9].*|[A-Z][0-9].*)$/);
+  if (m) set.add(`${m[1]}-${m[2]}`);
+  return [...set].filter(Boolean);
+}
+
 const markInput = z.object({
   employeeCode: z.string().trim().min(1).max(32),
   type: z.enum(["entrada", "salida"]),
