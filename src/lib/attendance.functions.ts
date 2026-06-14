@@ -59,7 +59,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     const { data: employee, error: empErr } = await supabaseAdmin
       .from("employees")
       .select("id, full_name, role, store_id, pin_hash, password_hash, active")
-      .ilike("employee_code", normalizeCode(data.employeeCode).replaceAll("%", ""))
+      .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
 
     if (empErr) throw new Error("Error consultando colaborador");
@@ -209,7 +209,7 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     const { data: emp } = await supabaseAdmin
       .from("employees")
       .select("id, full_name, role, active, store_id, pin_hash, password_hash, username")
-      .ilike("employee_code", normalizeCode(data.employeeCode).replaceAll("%", ""))
+      .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
     if (emp.role === "gerente_zona") {
