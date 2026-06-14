@@ -7,6 +7,21 @@ import { verifyPin } from "./pin.server";
 import { verifyPassword } from "./password.server";
 import { haversineMeters } from "./geo";
 
+/**
+ * Build candidate employee_code lookups from user input. The phone keypad
+ * makes the "-" hard to type, so accept both "GTA91" and "GT-A91", and any
+ * lower/upper case mix. Returns a small array of exact-match candidates.
+ */
+function codeCandidates(raw: string): string[] {
+  const cleaned = raw.toUpperCase().replace(/[^A-Z0-9-]/g, "");
+  const noDash = cleaned.replace(/-/g, "");
+  const set = new Set<string>([cleaned, noDash]);
+  // Insert dash between leading letters and the rest (e.g. GTA91 -> GT-A91)
+  const m = noDash.match(/^([A-Z]+)([0-9].*|[A-Z][0-9].*)$/);
+  if (m) set.add(`${m[1]}-${m[2]}`);
+  return [...set].filter(Boolean);
+}
+
 const markInput = z.object({
   employeeCode: z.string().trim().min(1).max(32),
   type: z.enum(["entrada", "salida"]),
@@ -44,7 +59,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     const { data: employee, error: empErr } = await supabaseAdmin
       .from("employees")
       .select("id, full_name, role, store_id, pin_hash, password_hash, active")
-      .eq("employee_code", data.employeeCode)
+      .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
 
     if (empErr) throw new Error("Error consultando colaborador");
@@ -194,7 +209,7 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     const { data: emp } = await supabaseAdmin
       .from("employees")
       .select("id, full_name, role, active, store_id, pin_hash, password_hash, username")
-      .eq("employee_code", data.employeeCode)
+      .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
     if (emp.role === "gerente_zona") {
