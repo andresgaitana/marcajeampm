@@ -341,7 +341,15 @@ function MarcajePage() {
                 <h2 className="text-xl font-bold text-foreground">Ingresa tu código</h2>
                 <p className="text-sm text-muted-foreground mt-1">Código de colaborador</p>
               </div>
-              <PinPad value={code} onChange={setCode} maxLength={8} />
+              <Input
+                autoFocus
+                className="h-14 text-lg text-center font-mono uppercase tracking-[0.3em]"
+                placeholder="Ej. GT001"
+                value={code}
+                maxLength={16}
+                onChange={(e) => setCode(e.target.value.toUpperCase().replace(/\s+/g, ""))}
+                onKeyDown={(e) => { if (e.key === "Enter") void submitCode(); }}
+              />
               <div className="flex gap-3 mt-6">
                 <Button variant="outline" className="flex-1 h-14" onClick={reset}>
                   Atrás
