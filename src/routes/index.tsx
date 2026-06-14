@@ -342,12 +342,16 @@ function MarcajePage() {
                 <p className="text-sm text-muted-foreground mt-1">Código de colaborador</p>
               </div>
               <Input
+                type="text"
+                inputMode="text"
+                autoCapitalize="characters"
+                autoComplete="off"
                 autoFocus
                 className="h-14 text-lg text-center font-mono uppercase tracking-[0.3em]"
-                placeholder="Ej. GT001"
+                placeholder="Ej. GT-A91"
                 value={code}
                 maxLength={16}
-                onChange={(e) => setCode(e.target.value.toUpperCase().replace(/\s+/g, ""))}
+                onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ""))}
                 onKeyDown={(e) => { if (e.key === "Enter") void submitCode(); }}
               />
               <div className="flex gap-3 mt-6">
