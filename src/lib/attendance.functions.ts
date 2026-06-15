@@ -6,6 +6,10 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { verifyPin } from "./pin.server";
 import { verifyPassword } from "./password.server";
 import { haversineMeters } from "./geo";
+import { validateSelfie } from "./selfie-validation.server";
+
+const MAX_SELFIE_ATTEMPTS = 4;
+const SELFIE_BLOCK_MINUTES = 15;
 
 /**
  * Build candidate employee_code lookups from user input. The phone keypad
@@ -58,13 +62,17 @@ export const markAttendance = createServerFn({ method: "POST" })
 
     const { data: employee, error: empErr } = await supabaseAdmin
       .from("employees")
-      .select("id, full_name, role, store_id, pin_hash, password_hash, active")
+      .select("id, full_name, role, store_id, pin_hash, password_hash, active, failed_selfie_attempts, selfie_blocked_until")
       .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
 
     if (empErr) throw new Error("Error consultando colaborador");
     if (!employee) return { ok: false as const, error: "Código no encontrado" };
     if (!employee.active) return { ok: false as const, error: "Colaborador inactivo" };
+    if (employee.selfie_blocked_until && new Date(employee.selfie_blocked_until).getTime() > Date.now()) {
+      const mins = Math.ceil((new Date(employee.selfie_blocked_until).getTime() - Date.now()) / 60000);
+      return { ok: false as const, error: `Bloqueado por selfies inválidas. Reintenta en ${mins} min o contacta al GT.` };
+    }
     // Zone managers can clock in at any store assigned to them
     if (employee.role === "gerente_zona") {
       const { data: assign } = await supabaseAdmin
@@ -134,7 +142,30 @@ export const markAttendance = createServerFn({ method: "POST" })
       authMethod = "webauthn";
     }
 
-    // 3) Validate geofence (soft if store has no coords or client has no GPS)
+    // 3) AI selfie validation (Gemini via Lovable AI Gateway)
+    const v = await validateSelfie(data.selfieDataUrl);
+    if (!v.ok) {
+      const attempts = (employee.failed_selfie_attempts ?? 0) + 1;
+      const remaining = Math.max(0, MAX_SELFIE_ATTEMPTS - attempts);
+      const patch: { failed_selfie_attempts: number; selfie_blocked_until?: string | null } = {
+        failed_selfie_attempts: attempts,
+      };
+      let blockMsg = "";
+      if (attempts >= MAX_SELFIE_ATTEMPTS) {
+        const until = new Date(Date.now() + SELFIE_BLOCK_MINUTES * 60_000).toISOString();
+        patch.selfie_blocked_until = until;
+        patch.failed_selfie_attempts = 0; // reset counter; block timer takes over
+        blockMsg = ` Bloqueado por ${SELFIE_BLOCK_MINUTES} minutos.`;
+      }
+      await supabaseAdmin.from("employees").update(patch).eq("id", employee.id);
+      return {
+        ok: false as const,
+        error: `${v.error}${attempts >= MAX_SELFIE_ATTEMPTS ? "" : ` (Intento ${attempts}/${MAX_SELFIE_ATTEMPTS})`}${blockMsg}`,
+        remainingAttempts: remaining,
+      };
+    }
+
+    // 4) Validate geofence (soft if store has no coords or client has no GPS)
     let locationValid = false;
     let distanceM: number | null = null;
     if (store.latitude != null && store.longitude != null && data.latitude != null && data.longitude != null) {
@@ -176,6 +207,13 @@ export const markAttendance = createServerFn({ method: "POST" })
         auth_method: authMethod,
       });
     if (insErr) return { ok: false as const, error: "Error guardando marcaje" };
+
+    // Reset failed counter on successful marcaje
+    if ((employee.failed_selfie_attempts ?? 0) > 0 || employee.selfie_blocked_until) {
+      await supabaseAdmin.from("employees")
+        .update({ failed_selfie_attempts: 0, selfie_blocked_until: null })
+        .eq("id", employee.id);
+    }
 
     return {
       ok: true as const,
