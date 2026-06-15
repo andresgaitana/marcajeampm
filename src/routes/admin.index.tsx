@@ -323,8 +323,6 @@ function EmployeesPanel() {
     role: "cajero" as EmployeeRole,
     store_id: "",
     pin: "",
-    username: "",
-    password: "",
     active: true,
   });
 
@@ -336,8 +334,6 @@ function EmployeesPanel() {
         role: editing.role as EmployeeRole,
         store_id: editing.store_id ?? "",
         pin: "",
-        username: (editing as { username?: string | null }).username ?? "",
-        password: "",
         active: editing.active,
       });
     } else {
@@ -347,8 +343,6 @@ function EmployeesPanel() {
         role: "cajero",
         store_id: storeList[0]?.id ?? "",
         pin: "",
-        username: "",
-        password: "",
         active: true,
       });
     }
@@ -369,8 +363,6 @@ function EmployeesPanel() {
             store_id: form.store_id,
             active: form.active,
             ...(form.pin ? { pin: form.pin } : {}),
-            ...(form.username !== ((editing as { username?: string | null }).username ?? "") ? { username: form.username || null } : {}),
-            ...(form.password ? { password: form.password } : {}),
           },
         });
         toast.success("Colaborador actualizado");
@@ -382,8 +374,6 @@ function EmployeesPanel() {
             role: form.role,
             store_id: form.store_id,
             pin: form.pin,
-            username: form.username || undefined,
-            password: form.password || undefined,
             active: form.active,
           },
         });
