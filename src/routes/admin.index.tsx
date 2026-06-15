@@ -495,6 +495,10 @@ function EmployeesPanel() {
                 <div>
                   <Label>Usuario (opcional)</Label>
                   <Input
+                    name="employee-username"
+                    autoComplete="off"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     value={form.username}
                     onChange={(e) => setForm({ ...form, username: e.target.value })}
                     placeholder="ej. jperez"
@@ -504,6 +508,10 @@ function EmployeesPanel() {
                   <Label>{editing ? "Nueva contraseña" : "Contraseña"}</Label>
                   <Input
                     type="password"
+                    name="employee-password"
+                    autoComplete="new-password"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     value={form.password}
                     onChange={(e) => setForm({ ...form, password: e.target.value })}
                     placeholder="6+ caracteres"
