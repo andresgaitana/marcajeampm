@@ -15,10 +15,27 @@ function rpInfo() {
   return { rpID: url.hostname, origin: url.origin, rpName: "Marcaje" };
 }
 
-async function assertAdmin(userId: string) {
-  const { data } = await supabaseAdmin
-    .from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle();
-  if (!data) throw new Error("Acceso denegado: se requiere rol de administrador");
+/**
+ * Allow fingerprint registration for: Admin, Gerente de Operaciones,
+ * or a Gerente de Zona / Gerente de Tienda whose accessible stores include
+ * the employee's store. This lets each GT take responsibility for
+ * enrolling fingerprints of their own team.
+ */
+async function assertCanManageEmployeeCreds(userId: string, employeeId: string) {
+  const { data: roleRows } = await supabaseAdmin
+    .from("user_roles").select("role").eq("user_id", userId);
+  const roles = (roleRows ?? []).map((r) => r.role as string);
+  if (roles.includes("admin") || roles.includes("gerente_operaciones")) return;
+
+  const { data: emp } = await supabaseAdmin
+    .from("employees").select("store_id").eq("id", employeeId).maybeSingle();
+  if (!emp) throw new Error("Colaborador no encontrado");
+
+  const { data: accessible } = await supabaseAdmin
+    .rpc("accessible_store_ids", { _user_id: userId });
+  const storeIds = (accessible ?? []).map((r: { store_id: string }) => r.store_id);
+  if (!storeIds.includes(emp.store_id))
+    throw new Error("Acceso denegado: este colaborador no pertenece a tus tiendas");
 }
 
 /** Admin: begin registration ceremony for an employee on this device. */
@@ -26,7 +43,7 @@ export const beginWebauthnRegistration = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ employeeId: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertCanManageEmployeeCreds(context.userId, data.employeeId);
     const { data: emp } = await supabaseAdmin
       .from("employees").select("id, employee_code, full_name").eq("id", data.employeeId).maybeSingle();
     if (!emp) throw new Error("Colaborador no encontrado");
@@ -73,7 +90,7 @@ export const finishWebauthnRegistration = createServerFn({ method: "POST" })
     }).parse(i),
   )
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    await assertCanManageEmployeeCreds(context.userId, data.employeeId);
     const { data: ch } = await supabaseAdmin
       .from("webauthn_challenges")
       .select("id, challenge, expires_at")
@@ -177,7 +194,10 @@ export const deleteEmployeeCredential = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context.userId);
+    const { data: cred } = await supabaseAdmin
+      .from("employee_credentials").select("employee_id").eq("id", data.id).maybeSingle();
+    if (!cred) throw new Error("Credencial no encontrada");
+    await assertCanManageEmployeeCreds(context.userId, cred.employee_id);
     const { error } = await supabaseAdmin.from("employee_credentials").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
