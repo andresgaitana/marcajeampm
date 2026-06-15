@@ -295,6 +295,7 @@ function EmployeesPanel() {
   const updateFn = useServerFn(updateEmployee);
   const deleteFn = useServerFn(deleteEmployee);
   const storesFn = useServerFn(listStores);
+  const checkFn = useServerFn(checkAdmin);
   const qc = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -302,6 +303,14 @@ function EmployeesPanel() {
     queryFn: () => fetchFn(),
   });
   const { data: stores } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
+  const { data: access } = useQuery({ queryKey: ["adminAccess"], queryFn: () => checkFn() });
+
+  // Un Gerente de Tienda "puro" (sin admin/ops/zona) tiene permisos limitados.
+  const isOnlyStoreAdmin =
+    !!access?.isStoreAdmin && !access?.isAdmin && !access?.isOperations && !access?.isZoneAdmin;
+  const allowedRoles: EmployeeRole[] = isOnlyStoreAdmin
+    ? ["cajero", "agente_mbk", "seguridad"]
+    : ["cajero", "agente_mbk", "gerente", "gerente_zona", "seguridad"];
 
   const employees = data ?? [];
   const storeList = stores ?? [];
@@ -439,11 +448,9 @@ function EmployeesPanel() {
                   <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v as EmployeeRole })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="cajero">Cajero</SelectItem>
-                      <SelectItem value="agente_mbk">Agente MBK</SelectItem>
-                      <SelectItem value="gerente">Gerente</SelectItem>
-                      <SelectItem value="gerente_zona">Gerente de Zona</SelectItem>
-                      <SelectItem value="seguridad">Seguridad</SelectItem>
+                      {allowedRoles.map((r) => (
+                        <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
