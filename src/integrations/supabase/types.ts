@@ -159,11 +159,13 @@ export type Database = {
           active: boolean
           created_at: string
           employee_code: string
+          failed_selfie_attempts: number
           full_name: string
           id: string
           password_hash: string | null
           pin_hash: string
           role: Database["public"]["Enums"]["employee_role"]
+          selfie_blocked_until: string | null
           store: string | null
           store_id: string
           updated_at: string
@@ -173,11 +175,13 @@ export type Database = {
           active?: boolean
           created_at?: string
           employee_code: string
+          failed_selfie_attempts?: number
           full_name: string
           id?: string
           password_hash?: string | null
           pin_hash: string
           role?: Database["public"]["Enums"]["employee_role"]
+          selfie_blocked_until?: string | null
           store?: string | null
           store_id: string
           updated_at?: string
@@ -187,11 +191,13 @@ export type Database = {
           active?: boolean
           created_at?: string
           employee_code?: string
+          failed_selfie_attempts?: number
           full_name?: string
           id?: string
           password_hash?: string | null
           pin_hash?: string
           role?: Database["public"]["Enums"]["employee_role"]
+          selfie_blocked_until?: string | null
           store?: string | null
           store_id?: string
           updated_at?: string
