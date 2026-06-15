@@ -323,8 +323,6 @@ function EmployeesPanel() {
     role: "cajero" as EmployeeRole,
     store_id: "",
     pin: "",
-    username: "",
-    password: "",
     active: true,
   });
 
@@ -336,8 +334,6 @@ function EmployeesPanel() {
         role: editing.role as EmployeeRole,
         store_id: editing.store_id ?? "",
         pin: "",
-        username: (editing as { username?: string | null }).username ?? "",
-        password: "",
         active: editing.active,
       });
     } else {
@@ -347,8 +343,6 @@ function EmployeesPanel() {
         role: "cajero",
         store_id: storeList[0]?.id ?? "",
         pin: "",
-        username: "",
-        password: "",
         active: true,
       });
     }
@@ -369,8 +363,6 @@ function EmployeesPanel() {
             store_id: form.store_id,
             active: form.active,
             ...(form.pin ? { pin: form.pin } : {}),
-            ...(form.username !== ((editing as { username?: string | null }).username ?? "") ? { username: form.username || null } : {}),
-            ...(form.password ? { password: form.password } : {}),
           },
         });
         toast.success("Colaborador actualizado");
@@ -382,8 +374,6 @@ function EmployeesPanel() {
             role: form.role,
             store_id: form.store_id,
             pin: form.pin,
-            username: form.username || undefined,
-            password: form.password || undefined,
             active: form.active,
           },
         });
@@ -491,34 +481,7 @@ function EmployeesPanel() {
                   placeholder={editing ? "••••" : "Ej. 1234"}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>Usuario (opcional)</Label>
-                  <Input
-                    name="employee-username"
-                    autoComplete="off"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.username}
-                    onChange={(e) => setForm({ ...form, username: e.target.value })}
-                    placeholder="ej. jperez"
-                  />
-                </div>
-                <div>
-                  <Label>{editing ? "Nueva contraseña" : "Contraseña"}</Label>
-                  <Input
-                    type="password"
-                    name="employee-password"
-                    autoComplete="new-password"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.password}
-                    onChange={(e) => setForm({ ...form, password: e.target.value })}
-                    placeholder="6+ caracteres"
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">Define PIN, o usuario+contraseña, o ambos. La huella se registra después con el botón <span className="inline-flex items-center gap-1"><Fingerprint className="h-3 w-3" /></span> en la lista.</p>
+              <p className="text-xs text-muted-foreground">El colaborador marcará entrada/salida con PIN + Huella. Registra la huella después con el botón <span className="inline-flex items-center gap-1"><Fingerprint className="h-3 w-3" /></span> en la lista. Los accesos de Administrador, Gerente de Operaciones y Gerente de Zona se gestionan en la pestaña <strong>Usuarios admin</strong>.</p>
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
