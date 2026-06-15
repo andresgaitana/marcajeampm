@@ -118,6 +118,15 @@ export const createEmployee = createServerFn({ method: "POST" })
     const scope = await getScope(context.userId);
     if (scope.storeIds !== "all" && !scope.storeIds.includes(data.store_id))
       throw new Error("No puedes crear colaboradores en esa tienda");
+    // Un Gerente de Tienda (sin rol admin/ops/zona) solo puede crear
+    // Cajero, Agente MBK o Seguridad. No puede crear Gerente ni Gerente de Zona.
+    const isOnlyStoreAdmin =
+      scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
+    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "seguridad"].includes(data.role)) {
+      throw new Error(
+        "Como Gerente de Tienda solo puedes crear Cajero, Agente MBK o Seguridad",
+      );
+    }
     const { error } = await supabaseAdmin.from("employees").insert({
       employee_code: data.employee_code,
       full_name: data.full_name,
@@ -348,6 +357,15 @@ export const deleteEmployee = createServerFn({ method: "POST" })
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
+    // Un Gerente de Tienda no puede eliminar colaboradores: solo Admin,
+    // Gerente de Operaciones o Gerente de Zona.
+    const isOnlyStoreAdmin =
+      scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
+    if (isOnlyStoreAdmin) {
+      throw new Error(
+        "Solo el Gerente de Zona (o un administrador) puede eliminar colaboradores",
+      );
+    }
     const { data: current } = await supabaseAdmin
       .from("employees").select("store_id").eq("id", data.id).maybeSingle();
     if (!current) throw new Error("Colaborador no encontrado");
