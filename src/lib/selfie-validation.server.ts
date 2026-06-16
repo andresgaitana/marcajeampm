@@ -102,6 +102,7 @@ export async function validateSelfie(dataUrl: string): Promise<{
     return { ok: false, error: "Respuesta de validación inválida. Intenta de nuevo." };
   }
   const v = result.data;
+  console.log("[selfie-validation] verdict", JSON.stringify(v));
 
   // Reject reasons (in order)
   if (v.is_blank) return { ok: false, error: "La foto está en blanco o borrosa. Acomódate frente a la cámara.", verdict: v };
