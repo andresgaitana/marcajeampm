@@ -45,10 +45,7 @@ export async function validateSelfie(dataUrl: string): Promise<{
   if (!apiKey) {
     // Fail open if AI is not configured — do not block marcaje, but log.
     console.warn("[selfie-validation] LOVABLE_API_KEY missing, skipping validation");
-    return { ok: true, verdict: {
-      is_person: true, face_count: 1, is_blank: false, is_screen: false,
-      is_photo_of_photo: false, lighting_ok: true, confidence: 0, reason: "skipped",
-    } };
+    return { ok: false, error: "Validación con IA no configurada. Contacta al administrador." };
   }
 
   let raw: string;
