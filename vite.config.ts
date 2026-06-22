@@ -12,4 +12,15 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Deploy target. Inside the Lovable sandbox this is ignored (the wrapper forces
+  // "cloudflare-module"); outside it (e.g. Vercel CI) Nitro builds the Vercel
+  // Build Output API (.vercel/output). Setting `nitro` also force-enables the
+  // deploy plugin, which the wrapper otherwise skips when no Lovable context is detected.
+  nitro: { preset: "vercel" },
+  // Disable production sourcemaps: rollup ran out of memory decoding dependency
+  // sourcemaps during the bundle. Sourcemaps aren't needed in the prod bundle and
+  // dropping them keeps the build well within memory limits.
+  vite: {
+    build: { sourcemap: false },
+  },
 });

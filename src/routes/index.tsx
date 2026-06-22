@@ -12,7 +12,7 @@ import { beginWebauthnAuth } from "@/lib/webauthn.functions";
 import { useTerminalStore } from "@/hooks/useTerminalStore";
 import { startAuthentication } from "@simplewebauthn/browser";
 import { toast } from "sonner";
-import logoAmpm from "@/assets/logo-ampm.png.asset.json";
+import logoAmpm from "@/assets/logo-ampm.png";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -247,7 +247,7 @@ function MarcajePage() {
     <div className="min-h-screen bg-gradient-to-br from-background via-secondary to-background flex flex-col">
       <header className="flex items-center justify-between p-4 md:px-8 gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <img src={logoAmpm.url} alt="AM/PM Centroamérica" className="h-10 w-auto shrink-0" />
+          <img src={logoAmpm} alt="AM/PM Centroamérica" className="h-10 w-auto shrink-0" />
           <div className="min-w-0">
             <h1 className="text-base font-bold tracking-tight text-foreground leading-tight truncate">
               {terminal.name}

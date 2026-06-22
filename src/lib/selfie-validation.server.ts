@@ -3,13 +3,20 @@ import { z } from "zod";
 /**
  * Server-only Gemini-powered selfie validator.
  *
- * Calls Lovable AI Gateway (OpenAI-compatible chat completions) with the
- * selfie data URL and asks for a structured JSON verdict. Used to block:
+ * Calls the Google Generative Language API (Gemini) directly with the selfie
+ * image and asks for a structured JSON verdict. Used to block:
  * - photos that do not contain a real human face
  * - blank / black / heavily blurred frames
  * - photos of a screen / display
  * - photos of a printed photo / id card / object
+ *
+ * Requires the GEMINI_API_KEY env var (create a free key at
+ * https://aistudio.google.com/app/apikey). This replaces the previous
+ * dependency on the Lovable AI Gateway so the app is independent of Lovable.
  */
+
+const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 const verdictSchema = z.object({
   is_person: z.boolean(),
@@ -37,50 +44,70 @@ const SYSTEM_PROMPT = `Eres un validador de selfies para un sistema de marcaje d
 }
 No agregues texto fuera del JSON. No uses markdown.`;
 
+/** Splits a data URL (data:<mime>;base64,<data>) into its mime type and raw base64. */
+function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | null {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
+}
+
 export async function validateSelfie(dataUrl: string): Promise<{
   ok: true;
   verdict: SelfieVerdict;
 } | { ok: false; error: string; verdict?: SelfieVerdict }> {
-  const apiKey = process.env.LOVABLE_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    // Fail open if AI is not configured — do not block marcaje, but log.
-    console.warn("[selfie-validation] LOVABLE_API_KEY missing, skipping validation");
+    // Fail closed if AI is not configured — block the marcaje with a clear message.
+    console.warn("[selfie-validation] GEMINI_API_KEY missing, cannot validate");
     return { ok: false, error: "Validación con IA no configurada. Contacta al administrador." };
+  }
+
+  const image = parseDataUrl(dataUrl);
+  if (!image) {
+    console.error("[selfie-validation] invalid data URL");
+    return { ok: false, error: "No se pudo leer la selfie. Intenta de nuevo." };
   }
 
   let raw: string;
   try {
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const res = await fetch(GEMINI_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Lovable-API-Key": apiKey,
+        "x-goog-api-key": apiKey,
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [
           {
             role: "user",
-            content: [
-              { type: "text", text: "Valida esta selfie y responde solo con el JSON pedido." },
-              { type: "image_url", image_url: { url: dataUrl } },
+            parts: [
+              { text: "Valida esta selfie y responde solo con el JSON pedido." },
+              { inline_data: { mime_type: image.mimeType, data: image.data } },
             ],
           },
         ],
-        response_format: { type: "json_object" },
-        temperature: 0,
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+        },
       }),
     });
     if (res.status === 429) return { ok: false, error: "Servicio de validación saturado. Intenta de nuevo en unos segundos." };
-    if (res.status === 402) return { ok: false, error: "Créditos de validación agotados. Contacta al administrador." };
+    if (res.status === 401 || res.status === 403) {
+      const txt = await res.text().catch(() => "");
+      console.error("[selfie-validation] gemini auth error", res.status, txt);
+      return { ok: false, error: "Validación con IA no configurada. Contacta al administrador." };
+    }
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      console.error("[selfie-validation] gateway error", res.status, txt);
+      console.error("[selfie-validation] gemini error", res.status, txt);
       return { ok: false, error: "No se pudo validar la selfie. Intenta de nuevo." };
     }
-    const json = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-    raw = json.choices?.[0]?.message?.content ?? "";
+    const json = (await res.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   } catch (e) {
     console.error("[selfie-validation] fetch failed", e);
     return { ok: false, error: "No se pudo validar la selfie. Intenta de nuevo." };

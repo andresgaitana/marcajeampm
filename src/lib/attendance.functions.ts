@@ -142,7 +142,7 @@ export const markAttendance = createServerFn({ method: "POST" })
       authMethod = "webauthn";
     }
 
-    // 3) AI selfie validation (Gemini via Lovable AI Gateway)
+    // 3) AI selfie validation (Google Gemini, direct)
     const v = await validateSelfie(data.selfieDataUrl);
     if (!v.ok) {
       const attempts = (employee.failed_selfie_attempts ?? 0) + 1;
