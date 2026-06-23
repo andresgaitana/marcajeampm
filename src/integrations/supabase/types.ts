@@ -19,6 +19,7 @@ export type Database = {
           auth_method: Database["public"]["Enums"]["auth_method"]
           created_at: string
           employee_id: string
+          face_override_by: string | null
           id: string
           latitude: number | null
           location_accuracy_m: number | null
@@ -33,6 +34,7 @@ export type Database = {
           auth_method?: Database["public"]["Enums"]["auth_method"]
           created_at?: string
           employee_id: string
+          face_override_by?: string | null
           id?: string
           latitude?: number | null
           location_accuracy_m?: number | null
@@ -47,6 +49,7 @@ export type Database = {
           auth_method?: Database["public"]["Enums"]["auth_method"]
           created_at?: string
           employee_id?: string
+          face_override_by?: string | null
           id?: string
           latitude?: number | null
           location_accuracy_m?: number | null

@@ -26,10 +26,26 @@ export const Route = createFileRoute("/")({
   component: MarcajePage,
 });
 
-type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "done";
+type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "done";
 type AttType = "entrada" | "salida";
 type AuthMethod = "pin" | "password" | "webauthn";
 type GeoState = { lat: number; lng: number; accuracy: number } | null;
+type MarkInput = {
+  employeeCode: string;
+  type: AttType;
+  selfieDataUrl: string;
+  storeCode: string;
+  terminalPin: string;
+  pin?: string;
+  password?: string;
+  webauthnResponse?: unknown;
+  latitude?: number;
+  longitude?: number;
+  locationAccuracyM?: number;
+  faceDescriptor?: number[];
+  supervisorCode?: string;
+  supervisorPin?: string;
+};
 
 function MarcajePage() {
   const lookup = useServerFn(lookupEmployee);
@@ -51,6 +67,10 @@ function MarcajePage() {
   const [loading, setLoading] = useState(false);
   const [geo, setGeo] = useState<GeoState>(null);
   const [geoDenied, setGeoDenied] = useState(false);
+  const [overrideCode, setOverrideCode] = useState("");
+  const [overridePin, setOverridePin] = useState("");
+  const [overrideMsg, setOverrideMsg] = useState("");
+  const [pendingPayload, setPendingPayload] = useState<MarkInput | null>(null);
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -86,6 +106,10 @@ function MarcajePage() {
     setMethod(null);
     setWebauthnResponse(null);
     setResult(null);
+    setOverrideCode("");
+    setOverridePin("");
+    setOverrideMsg("");
+    setPendingPayload(null);
   };
 
   const submitCode = async () => {
@@ -172,42 +196,21 @@ function MarcajePage() {
     setStep("selfie");
   };
 
-  const onSelfie = async (dataUrl: string, faceDescriptor: number[] | null) => {
-    if (!type || !terminal) return;
+  const submit = async (payload: MarkInput) => {
     setStep("confirming");
     try {
-      type MarkInput = {
-        employeeCode: string;
-        type: AttType;
-        selfieDataUrl: string;
-        storeCode: string;
-        terminalPin: string;
-        pin?: string;
-        password?: string;
-        webauthnResponse?: unknown;
-        latitude?: number;
-        longitude?: number;
-        locationAccuracyM?: number;
-        faceDescriptor?: number[];
-      };
-      const payload: MarkInput = {
-        employeeCode: code,
-        type,
-        selfieDataUrl: dataUrl,
-        storeCode: terminal.code,
-        terminalPin: terminal.pin,
-      };
-      if (faceDescriptor) payload.faceDescriptor = faceDescriptor;
-      if (method === "pin") payload.pin = pin;
-      else if (method === "password") payload.password = password;
-      else if (method === "webauthn") payload.webauthnResponse = webauthnResponse;
-      if (geo) {
-        payload.latitude = geo.lat;
-        payload.longitude = geo.lng;
-        payload.locationAccuracyM = geo.accuracy;
-      }
       const res = await mark({ data: payload });
       if (!res.ok) {
+        const faceFail = !!res.error && res.error.includes("rostro no coincide");
+        const supFail = !!res.error && res.error.includes("Supervisor");
+        if (faceFail || supFail) {
+          // Ofrecer (o reintentar) el override de supervisor sin perder la selfie.
+          if (faceFail) setPendingPayload({ ...payload, supervisorCode: undefined, supervisorPin: undefined });
+          setOverrideMsg(res.error ?? "El rostro no coincide.");
+          if (supFail) toast.error(res.error);
+          setStep("override");
+          return;
+        }
         toast.error(res.error);
         setPin("");
         setPassword("");
@@ -228,6 +231,36 @@ function MarcajePage() {
       toast.error("Error al registrar el marcaje");
       setStep(method ?? "method");
     }
+  };
+
+  const onSelfie = async (dataUrl: string, faceDescriptor: number[] | null) => {
+    if (!type || !terminal) return;
+    const payload: MarkInput = {
+      employeeCode: code,
+      type,
+      selfieDataUrl: dataUrl,
+      storeCode: terminal.code,
+      terminalPin: terminal.pin,
+    };
+    if (faceDescriptor) payload.faceDescriptor = faceDescriptor;
+    if (method === "pin") payload.pin = pin;
+    else if (method === "password") payload.password = password;
+    else if (method === "webauthn") payload.webauthnResponse = webauthnResponse;
+    if (geo) {
+      payload.latitude = geo.lat;
+      payload.longitude = geo.lng;
+      payload.locationAccuracyM = geo.accuracy;
+    }
+    await submit(payload);
+  };
+
+  const submitOverride = async () => {
+    if (!pendingPayload) return;
+    if (!overrideCode || overridePin.length < 4) {
+      toast.error("Ingresa el código y PIN del supervisor");
+      return;
+    }
+    await submit({ ...pendingPayload, supervisorCode: overrideCode, supervisorPin: overridePin });
   };
 
   if (!ready) {
@@ -484,6 +517,47 @@ function MarcajePage() {
               <Loader2 className="h-12 w-12 animate-spin text-accent" />
               <p className="text-muted-foreground">Registrando marcaje…</p>
             </div>
+          )}
+
+          {step === "override" && (
+            <>
+              <div className="text-center mb-4">
+                <h2 className="text-xl font-bold text-foreground">Autorización de supervisor</h2>
+                <p className="text-sm text-destructive mt-1">{overrideMsg}</p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Si el reconocimiento facial falla, un Gerente de Tienda o de Zona puede autorizar
+                  este marcaje con su código y PIN (queda registrado quién autorizó).
+                </p>
+              </div>
+              <div className="space-y-3">
+                <Input
+                  autoFocus
+                  className="h-14 text-lg"
+                  value={overrideCode}
+                  onChange={(e) => setOverrideCode(e.target.value)}
+                  placeholder="Código del supervisor (ej. GT-A07)"
+                />
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  className="h-14 text-lg"
+                  value={overridePin}
+                  onChange={(e) => setOverridePin(e.target.value.replace(/\D/g, ""))}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitOverride(); }}
+                  placeholder="PIN del supervisor"
+                  maxLength={8}
+                />
+              </div>
+              <div className="flex gap-3 mt-6">
+                <Button variant="outline" className="flex-1 h-14" onClick={reset}>Cancelar</Button>
+                <Button
+                  className="flex-1 h-14 bg-accent text-accent-foreground hover:bg-accent/90"
+                  onClick={submitOverride}
+                >
+                  Autorizar marcaje
+                </Button>
+              </div>
+            </>
           )}
 
           {step === "done" && result && (

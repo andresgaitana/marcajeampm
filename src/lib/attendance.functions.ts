@@ -49,7 +49,33 @@ const markInput = z.object({
   // Descriptor facial (128 floats) calculado en cliente con face-api, para
   // verificar identidad contra la foto de referencia del colaborador.
   faceDescriptor: z.array(z.number()).length(128).optional(),
+  // Override de supervisor (GT/GZ) cuando el reconocimiento facial falla.
+  supervisorCode: z.string().trim().min(1).max(32).optional(),
+  supervisorPin: z.string().trim().min(4).max(8).optional(),
 });
+
+/**
+ * Valida un override de supervisor (Gerente de Tienda / Gerente de Zona) para
+ * autorizar un marcaje cuando el reconocimiento facial falla. Devuelve el id del
+ * supervisor si su PIN es correcto y tiene autoridad sobre la tienda, o null.
+ */
+async function validateSupervisorOverride(
+  code: string | undefined,
+  pin: string | undefined,
+  store: { id: string; zone_id: string | null },
+): Promise<string | null> {
+  if (!code || !pin) return null;
+  const { data: sup } = await supabaseAdmin
+    .from("employees")
+    .select("id, role, store_id, pin_hash, active")
+    .in("employee_code", codeCandidates(code))
+    .maybeSingle();
+  if (!sup || !sup.active) return null;
+  if (sup.role !== "gerente" && sup.role !== "gerente_zona") return null;
+  if (!sup.pin_hash || !verifyPin(pin, sup.pin_hash)) return null;
+  if (!(await employeeCanMarkAtStore(sup, store))) return null;
+  return sup.id;
+}
 
 /**
  * Public marcaje endpoint. Validates terminal store + PIN, then verifies
@@ -167,10 +193,15 @@ export const markAttendance = createServerFn({ method: "POST" })
     // 3.5) Verificación de IDENTIDAD facial contra la foto de referencia.
     // Política degradada: solo se exige si el colaborador ya está enrolado
     // (tiene face_descriptor). Los no enrolados marcan normal hasta enrolarse.
+    let faceOverrideBy: string | null = null;
     if (Array.isArray(employee.face_descriptor) && employee.face_descriptor.length === 128) {
       const matches = Array.isArray(data.faceDescriptor)
         && facesMatch(employee.face_descriptor, data.faceDescriptor);
-      if (!matches) {
+      if (!matches && (data.supervisorCode || data.supervisorPin)) {
+        faceOverrideBy = await validateSupervisorOverride(data.supervisorCode, data.supervisorPin, store);
+        if (!faceOverrideBy)
+          return { ok: false as const, error: "Supervisor no válido o sin autoridad en esta tienda." };
+      } else if (!matches) {
         const attempts = (employee.failed_selfie_attempts ?? 0) + 1;
         const remaining = Math.max(0, MAX_SELFIE_ATTEMPTS - attempts);
         const patch: { failed_selfie_attempts: number; selfie_blocked_until?: string | null } = {
@@ -230,12 +261,13 @@ export const markAttendance = createServerFn({ method: "POST" })
         type: data.type,
         store_id: store.id,
         selfie_url: pub.publicUrl,
-        notes: data.notes ?? null,
+        notes: faceOverrideBy ? `Marcaje autorizado por supervisor (override facial). ${data.notes ?? ""}`.trim() : (data.notes ?? null),
         latitude: data.latitude ?? null,
         longitude: data.longitude ?? null,
         location_accuracy_m: data.locationAccuracyM ?? null,
         location_valid: locationValid,
         auth_method: authMethod,
+        face_override_by: faceOverrideBy,
       });
     if (insErr) return { ok: false as const, error: "Error guardando marcaje" };
 
