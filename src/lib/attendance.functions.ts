@@ -7,6 +7,7 @@ import { verifyPin } from "./pin.server";
 import { verifyPassword } from "./password.server";
 import { haversineMeters } from "./geo";
 import { validateSelfie } from "./selfie-validation.server";
+import { employeeCanMarkAtStore } from "./marcaje-auth.server";
 
 const MAX_SELFIE_ATTEMPTS = 4;
 const SELFIE_BLOCK_MINUTES = 15;
@@ -53,7 +54,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     // 1) Validate terminal (store + terminal PIN)
     const { data: store } = await supabaseAdmin
       .from("stores")
-      .select("id, code, name, terminal_pin_hash, active, latitude, longitude, geofence_radius_m")
+      .select("id, code, name, terminal_pin_hash, active, latitude, longitude, geofence_radius_m, zone_id")
       .eq("code", data.storeCode)
       .maybeSingle();
     if (!store || !store.active) return { ok: false as const, error: "Terminal no válida. Reconfigura la tienda." };
@@ -73,18 +74,9 @@ export const markAttendance = createServerFn({ method: "POST" })
       const mins = Math.ceil((new Date(employee.selfie_blocked_until).getTime() - Date.now()) / 60000);
       return { ok: false as const, error: `Bloqueado por selfies inválidas. Reintenta en ${mins} min o contacta al GT.` };
     }
-    // Zone managers can clock in at any store assigned to them
-    if (employee.role === "gerente_zona") {
-      const { data: assign } = await supabaseAdmin
-        .from("employee_store_assignments")
-        .select("id")
-        .eq("employee_id", employee.id)
-        .eq("store_id", store.id)
-        .maybeSingle();
-      if (!assign)
-        return { ok: false as const, error: `${store.name} no está asignada a este gerente de zona` };
-    } else if (employee.store_id !== store.id) {
-      return { ok: false as const, error: `Este colaborador no pertenece a ${store.name}` };
+    // Autorización de marcaje por tienda según rol (tienda ancla / zona del GZ / multi-tienda del GT)
+    if (!(await employeeCanMarkAtStore(employee, store))) {
+      return { ok: false as const, error: `Este colaborador no puede marcar en ${store.name}` };
     }
 
     // 2) Validate authentication: exactly one method
@@ -242,7 +234,7 @@ export const lookupEmployee = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const { data: store } = await supabaseAdmin
-      .from("stores").select("id").eq("code", data.storeCode).maybeSingle();
+      .from("stores").select("id, zone_id").eq("code", data.storeCode).maybeSingle();
     if (!store) return { found: false as const };
     const { data: emp } = await supabaseAdmin
       .from("employees")
@@ -250,15 +242,7 @@ export const lookupEmployee = createServerFn({ method: "POST" })
       .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
-    if (emp.role === "gerente_zona") {
-      const { data: assign } = await supabaseAdmin
-        .from("employee_store_assignments")
-        .select("id")
-        .eq("employee_id", emp.id)
-        .eq("store_id", store.id)
-        .maybeSingle();
-      if (!assign) return { found: false as const, wrongStore: true as const };
-    } else if (emp.store_id !== store.id) {
+    if (!(await employeeCanMarkAtStore(emp, store))) {
       return { found: false as const, wrongStore: true as const };
     }
     const { count: credCount } = await supabaseAdmin

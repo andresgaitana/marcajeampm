@@ -512,7 +512,14 @@ export const listEmployeeAssignments = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) => z.object({ employee_id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
-    await getScope(context.userId);
+    const scope = await getScope(context.userId);
+    // Evitar lectura cruzada: el colaborador debe pertenecer al scope del usuario.
+    if (scope.storeIds !== "all") {
+      const { data: emp } = await supabaseAdmin
+        .from("employees").select("store_id").eq("id", data.employee_id).maybeSingle();
+      if (!emp || !scope.storeIds.includes(emp.store_id))
+        throw new Error("Acceso denegado a este colaborador");
+    }
     const { data: rows, error } = await supabaseAdmin
       .from("employee_store_assignments")
       .select("store_id, stores(code, name)")

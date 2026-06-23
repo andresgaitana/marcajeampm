@@ -8,6 +8,7 @@ import {
 } from "@simplewebauthn/server";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { employeeCanMarkAtStore } from "./marcaje-auth.server";
 
 function rpInfo() {
   const req = getRequest();
@@ -146,12 +147,13 @@ export const beginWebauthnAuth = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const { data: store } = await supabaseAdmin
-      .from("stores").select("id").eq("code", data.storeCode).maybeSingle();
+      .from("stores").select("id, zone_id").eq("code", data.storeCode).maybeSingle();
     if (!store) return { ok: false as const, error: "Tienda no encontrada" };
     const { data: emp } = await supabaseAdmin
-      .from("employees").select("id, store_id, active").eq("employee_code", data.employeeCode).maybeSingle();
+      .from("employees").select("id, role, store_id, active").eq("employee_code", data.employeeCode).maybeSingle();
     if (!emp || !emp.active) return { ok: false as const, error: "Colaborador no válido" };
-    if (emp.store_id !== store.id) return { ok: false as const, error: "Colaborador no pertenece a esta tienda" };
+    if (!(await employeeCanMarkAtStore(emp, store)))
+      return { ok: false as const, error: "Colaborador no pertenece a esta tienda" };
 
     const { data: creds } = await supabaseAdmin
       .from("employee_credentials").select("credential_id, transports").eq("employee_id", emp.id);
