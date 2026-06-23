@@ -191,14 +191,19 @@ export const markAttendance = createServerFn({ method: "POST" })
       }
     }
 
-    // 4) Validate geofence (soft if store has no coords or client has no GPS)
-    let locationValid = false;
+    // 4) Geocerca OBLIGATORIA: la tienda debe tener coordenadas y el colaborador
+    // debe estar físicamente dentro del radio (default 300 m).
     let distanceM: number | null = null;
-    if (store.latitude != null && store.longitude != null && data.latitude != null && data.longitude != null) {
-      distanceM = haversineMeters(store.latitude, store.longitude, data.latitude, data.longitude);
-      locationValid = distanceM <= (store.geofence_radius_m ?? 300);
-      if (!locationValid)
-        return { ok: false as const, error: `Estás a ${Math.round(distanceM)}m de la tienda. Acércate (máx ${store.geofence_radius_m}m).` };
+    if (store.latitude == null || store.longitude == null) {
+      return { ok: false as const, error: "Esta tienda no tiene ubicación configurada. Contacta al administrador." };
+    }
+    if (data.latitude == null || data.longitude == null) {
+      return { ok: false as const, error: "Activa la ubicación (GPS) del dispositivo para poder marcar." };
+    }
+    distanceM = haversineMeters(store.latitude, store.longitude, data.latitude, data.longitude);
+    const locationValid = distanceM <= (store.geofence_radius_m ?? 300);
+    if (!locationValid) {
+      return { ok: false as const, error: `Estás a ${Math.round(distanceM)}m de la tienda. Acércate (máx ${store.geofence_radius_m ?? 300}m).` };
     }
 
     // Upload selfie (data URL -> bytes)
