@@ -24,6 +24,9 @@ function codeCandidates(raw: string): string[] {
   // Insert dash between leading letters and the rest (e.g. GTA91 -> GT-A91)
   const m = noDash.match(/^([A-Z]+)([0-9].*|[A-Z][0-9].*)$/);
   if (m) set.add(`${m[1]}-${m[2]}`);
+  // Aceptar prefijo GT/GZ tecleado sin guion (GZMGAS -> GZ-MGAS, GZFORS1 -> GZ-FORS1, GTA91 -> GT-A91)
+  const p = noDash.match(/^(GT|GZ)(.+)$/);
+  if (p) set.add(`${p[1]}-${p[2]}`);
   return [...set].filter(Boolean);
 }
 
