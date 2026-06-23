@@ -42,6 +42,7 @@ import {
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
 import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks } from "@/lib/dashboard.functions";
+import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -73,7 +74,7 @@ import {
 import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
-  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight,
+  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -328,7 +329,9 @@ function EmployeesPanel() {
     store_id: "",
     pin: "",
     active: true,
+    face_descriptor: null as number[] | null,
   });
+  const [showRefCapture, setShowRefCapture] = useState(false);
 
   useEffect(() => {
     if (editing) {
@@ -339,6 +342,7 @@ function EmployeesPanel() {
         store_id: editing.store_id ?? "",
         pin: "",
         active: editing.active,
+        face_descriptor: null,
       });
     } else {
       setForm({
@@ -348,8 +352,10 @@ function EmployeesPanel() {
         store_id: storeList[0]?.id ?? "",
         pin: "",
         active: true,
+        face_descriptor: null,
       });
     }
+    setShowRefCapture(false);
   }, [editing, open, storeList]);
 
   const save = async () => {
@@ -367,10 +373,15 @@ function EmployeesPanel() {
             store_id: form.store_id,
             active: form.active,
             ...(form.pin ? { pin: form.pin } : {}),
+            ...(form.face_descriptor ? { face_descriptor: form.face_descriptor } : {}),
           },
         });
         toast.success("Colaborador actualizado");
       } else {
+        if (!form.face_descriptor) {
+          toast.error("Toma la foto de referencia del colaborador (reconocimiento facial)");
+          return;
+        }
         await createFn({
           data: {
             employee_code: form.employee_code,
@@ -379,6 +390,7 @@ function EmployeesPanel() {
             store_id: form.store_id,
             pin: form.pin,
             active: form.active,
+            face_descriptor: form.face_descriptor,
           },
         });
         toast.success("Colaborador creado");
@@ -484,6 +496,36 @@ function EmployeesPanel() {
                   onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, "") })}
                   placeholder={editing ? "••••" : "Ej. 1234"}
                 />
+              </div>
+              <div className="rounded-lg border border-border p-3 space-y-2">
+                <Label>Foto de referencia (reconocimiento facial)</Label>
+                {showRefCapture ? (
+                  <SelfieCapture
+                    requireDescriptor
+                    confirmLabel="Usar esta foto"
+                    onCapture={(_url, desc) => {
+                      setForm((f) => ({ ...f, face_descriptor: desc }));
+                      setShowRefCapture(false);
+                    }}
+                    onCancel={() => setShowRefCapture(false)}
+                  />
+                ) : form.face_descriptor ? (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-[oklch(0.55_0.14_155)] font-medium">✓ Rostro de referencia capturado</span>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setShowRefCapture(true)}>
+                      Volver a tomar
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      {editing ? "Opcional: re-capturar para actualizar." : "Obligatoria: se usará para validar su identidad al marcar."}
+                    </span>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setShowRefCapture(true)}>
+                      <Camera className="h-4 w-4 mr-1" /> Tomar foto
+                    </Button>
+                  </div>
+                )}
               </div>
               <p className="text-xs text-muted-foreground">El colaborador marcará entrada/salida con PIN + Huella. Registra la huella después con el botón <span className="inline-flex items-center gap-1"><Fingerprint className="h-3 w-3" /></span> en la lista. Los accesos de Administrador, Gerente de Operaciones y Gerente de Zona se gestionan en la pestaña <strong>Usuarios admin</strong>.</p>
               <label className="flex items-center gap-2 text-sm">

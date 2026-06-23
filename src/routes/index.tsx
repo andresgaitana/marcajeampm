@@ -172,7 +172,7 @@ function MarcajePage() {
     setStep("selfie");
   };
 
-  const onSelfie = async (dataUrl: string) => {
+  const onSelfie = async (dataUrl: string, faceDescriptor: number[] | null) => {
     if (!type || !terminal) return;
     setStep("confirming");
     try {
@@ -188,6 +188,7 @@ function MarcajePage() {
         latitude?: number;
         longitude?: number;
         locationAccuracyM?: number;
+        faceDescriptor?: number[];
       };
       const payload: MarkInput = {
         employeeCode: code,
@@ -196,6 +197,7 @@ function MarcajePage() {
         storeCode: terminal.code,
         terminalPin: terminal.pin,
       };
+      if (faceDescriptor) payload.faceDescriptor = faceDescriptor;
       if (method === "pin") payload.pin = pin;
       else if (method === "password") payload.password = password;
       else if (method === "webauthn") payload.webauthnResponse = webauthnResponse;

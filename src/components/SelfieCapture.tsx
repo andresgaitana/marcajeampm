@@ -1,21 +1,31 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, RotateCcw } from "lucide-react";
+import { Camera, RotateCcw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { computeDescriptorFromDataUrl, loadFaceModels } from "@/lib/face-api";
 
 interface Props {
-  onCapture: (dataUrl: string) => void;
+  /** Recibe la foto (data URL) y el descriptor facial 128-d (o null si no se pudo calcular). */
+  onCapture: (dataUrl: string, descriptor: number[] | null) => void;
   onCancel?: () => void;
+  /** Texto del botón de confirmar (por defecto "Confirmar marcaje"). */
+  confirmLabel?: string;
+  /** Si true (enrolamiento), exige detectar un rostro antes de continuar. */
+  requireDescriptor?: boolean;
 }
 
-export function SelfieCapture({ onCapture, onCancel }: Props) {
+export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescriptor }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [computing, setComputing] = useState(false);
+  const [faceError, setFaceError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    // Precargar los modelos de reconocimiento facial (CDN) mientras el usuario se acomoda.
+    loadFaceModels();
     navigator.mediaDevices
       .getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false })
       .then((s) => {
@@ -54,13 +64,35 @@ export function SelfieCapture({ onCapture, onCancel }: Props) {
     ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const url = canvas.toDataURL("image/jpeg", 0.8);
+    setFaceError(null);
     setPreview(url);
   };
 
-  const retake = () => setPreview(null);
+  const retake = () => {
+    setPreview(null);
+    setFaceError(null);
+  };
 
-  const confirm = () => {
-    if (preview) onCapture(preview);
+  const confirm = async () => {
+    if (!preview || computing) return;
+    setComputing(true);
+    setFaceError(null);
+    let descriptor: number[] | null = null;
+    try {
+      descriptor = await computeDescriptorFromDataUrl(preview);
+    } catch (e) {
+      descriptor = null;
+      if (requireDescriptor) {
+        // En enrolamiento es obligatorio detectar el rostro.
+        setFaceError(e instanceof Error ? e.message : "No se detectó un rostro. Repite la foto.");
+        setComputing(false);
+        return;
+      }
+      // En marcaje degradamos: el servidor decide (Gemini valida la selfie y,
+      // si el colaborador está enrolado, exigirá el match).
+    }
+    setComputing(false);
+    onCapture(preview, descriptor);
   };
 
   return (
@@ -85,10 +117,14 @@ export function SelfieCapture({ onCapture, onCancel }: Props) {
       </div>
       <canvas ref={canvasRef} className="hidden" />
 
+      {faceError && (
+        <p className="text-sm text-destructive text-center -mt-1">{faceError}</p>
+      )}
+
       <div className="flex gap-3 w-full max-w-md">
         {preview ? (
           <>
-            <Button type="button" variant="outline" className="flex-1 h-14" onClick={retake}>
+            <Button type="button" variant="outline" className="flex-1 h-14" onClick={retake} disabled={computing}>
               <RotateCcw className="mr-2 h-5 w-5" />
               Repetir
             </Button>
@@ -96,8 +132,16 @@ export function SelfieCapture({ onCapture, onCancel }: Props) {
               type="button"
               className="flex-1 h-14 bg-accent text-accent-foreground hover:bg-accent/90"
               onClick={confirm}
+              disabled={computing}
             >
-              Confirmar marcaje
+              {computing ? (
+                <>
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Verificando rostro…
+                </>
+              ) : (
+                confirmLabel ?? "Confirmar marcaje"
+              )}
             </Button>
           </>
         ) : (

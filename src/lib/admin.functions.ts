@@ -108,6 +108,7 @@ const employeeInput = z.object({
   role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona"]),
   store_id: z.string().uuid(),
   pin: z.string().trim().regex(/^\d{4,8}$/, "PIN debe ser 4-8 dígitos"),
+  face_descriptor: z.array(z.number()).length(128).optional(),
   active: z.boolean().default(true),
 });
 
@@ -134,6 +135,8 @@ export const createEmployee = createServerFn({ method: "POST" })
       store_id: data.store_id,
       pin_hash: hashPin(data.pin),
       active: data.active,
+      face_descriptor: data.face_descriptor ?? null,
+      face_enrolled_at: data.face_descriptor ? new Date().toISOString() : null,
     });
     if (error) throw new Error(error.message);
     return { ok: true };
@@ -322,6 +325,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
         store_id: z.string().uuid().optional(),
         active: z.boolean().optional(),
         pin: z.string().trim().regex(/^\d{4,8}$/).optional(),
+        face_descriptor: z.array(z.number()).length(128).optional(),
       })
       .parse(i),
   )
@@ -341,12 +345,18 @@ export const updateEmployee = createServerFn({ method: "POST" })
       store_id?: string;
       active?: boolean;
       pin_hash?: string;
+      face_descriptor?: number[];
+      face_enrolled_at?: string;
     } = {};
     if (data.full_name !== undefined) patch.full_name = data.full_name;
     if (data.role !== undefined) patch.role = data.role;
     if (data.store_id !== undefined) patch.store_id = data.store_id;
     if (data.active !== undefined) patch.active = data.active;
     if (data.pin !== undefined) patch.pin_hash = hashPin(data.pin);
+    if (data.face_descriptor) {
+      patch.face_descriptor = data.face_descriptor;
+      patch.face_enrolled_at = new Date().toISOString();
+    }
     const { error } = await supabaseAdmin.from("employees").update(patch).eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };

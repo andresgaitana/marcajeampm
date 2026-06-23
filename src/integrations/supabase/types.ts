@@ -159,6 +159,8 @@ export type Database = {
           active: boolean
           created_at: string
           employee_code: string
+          face_descriptor: number[] | null
+          face_enrolled_at: string | null
           failed_selfie_attempts: number
           full_name: string
           id: string
@@ -175,6 +177,8 @@ export type Database = {
           active?: boolean
           created_at?: string
           employee_code: string
+          face_descriptor?: number[] | null
+          face_enrolled_at?: string | null
           failed_selfie_attempts?: number
           full_name: string
           id?: string
@@ -191,6 +195,8 @@ export type Database = {
           active?: boolean
           created_at?: string
           employee_code?: string
+          face_descriptor?: number[] | null
+          face_enrolled_at?: string | null
           failed_selfie_attempts?: number
           full_name?: string
           id?: string

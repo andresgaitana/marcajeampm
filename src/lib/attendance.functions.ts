@@ -8,6 +8,7 @@ import { verifyPassword } from "./password.server";
 import { haversineMeters } from "./geo";
 import { validateSelfie } from "./selfie-validation.server";
 import { employeeCanMarkAtStore } from "./marcaje-auth.server";
+import { facesMatch } from "./face-match.server";
 
 const MAX_SELFIE_ATTEMPTS = 4;
 const SELFIE_BLOCK_MINUTES = 15;
@@ -45,6 +46,9 @@ const markInput = z.object({
   latitude: z.number().min(-90).max(90).optional(),
   longitude: z.number().min(-180).max(180).optional(),
   locationAccuracyM: z.number().min(0).max(100000).optional(),
+  // Descriptor facial (128 floats) calculado en cliente con face-api, para
+  // verificar identidad contra la foto de referencia del colaborador.
+  faceDescriptor: z.array(z.number()).length(128).optional(),
 });
 
 /**
@@ -66,7 +70,7 @@ export const markAttendance = createServerFn({ method: "POST" })
 
     const { data: employee, error: empErr } = await supabaseAdmin
       .from("employees")
-      .select("id, full_name, role, store_id, pin_hash, password_hash, active, failed_selfie_attempts, selfie_blocked_until")
+      .select("id, full_name, role, store_id, pin_hash, password_hash, active, failed_selfie_attempts, selfie_blocked_until, face_descriptor")
       .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
 
@@ -158,6 +162,33 @@ export const markAttendance = createServerFn({ method: "POST" })
         error: `${v.error}${attempts >= MAX_SELFIE_ATTEMPTS ? "" : ` (Intento ${attempts}/${MAX_SELFIE_ATTEMPTS})`}${blockMsg}`,
         remainingAttempts: remaining,
       };
+    }
+
+    // 3.5) Verificación de IDENTIDAD facial contra la foto de referencia.
+    // Política degradada: solo se exige si el colaborador ya está enrolado
+    // (tiene face_descriptor). Los no enrolados marcan normal hasta enrolarse.
+    if (Array.isArray(employee.face_descriptor) && employee.face_descriptor.length === 128) {
+      const matches = Array.isArray(data.faceDescriptor)
+        && facesMatch(employee.face_descriptor, data.faceDescriptor);
+      if (!matches) {
+        const attempts = (employee.failed_selfie_attempts ?? 0) + 1;
+        const remaining = Math.max(0, MAX_SELFIE_ATTEMPTS - attempts);
+        const patch: { failed_selfie_attempts: number; selfie_blocked_until?: string | null } = {
+          failed_selfie_attempts: attempts,
+        };
+        let blockMsg = "";
+        if (attempts >= MAX_SELFIE_ATTEMPTS) {
+          patch.selfie_blocked_until = new Date(Date.now() + SELFIE_BLOCK_MINUTES * 60_000).toISOString();
+          patch.failed_selfie_attempts = 0;
+          blockMsg = ` Bloqueado por ${SELFIE_BLOCK_MINUTES} minutos.`;
+        }
+        await supabaseAdmin.from("employees").update(patch).eq("id", employee.id);
+        return {
+          ok: false as const,
+          error: `El rostro no coincide con ${employee.full_name}. Debe marcar la persona correcta.${attempts >= MAX_SELFIE_ATTEMPTS ? "" : ` (Intento ${attempts}/${MAX_SELFIE_ATTEMPTS})`}${blockMsg}`,
+          remainingAttempts: remaining,
+        };
+      }
     }
 
     // 4) Validate geofence (soft if store has no coords or client has no GPS)
