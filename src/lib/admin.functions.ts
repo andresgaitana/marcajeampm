@@ -357,20 +357,20 @@ export const deleteEmployee = createServerFn({ method: "POST" })
   .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
-    // Un Gerente de Tienda no puede eliminar colaboradores: solo Admin,
-    // Gerente de Operaciones o Gerente de Zona.
     const isOnlyStoreAdmin =
       scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
-    if (isOnlyStoreAdmin) {
-      throw new Error(
-        "Solo el Gerente de Zona (o un administrador) puede eliminar colaboradores",
-      );
-    }
     const { data: current } = await supabaseAdmin
-      .from("employees").select("store_id").eq("id", data.id).maybeSingle();
+      .from("employees").select("store_id, role").eq("id", data.id).maybeSingle();
     if (!current) throw new Error("Colaborador no encontrado");
     if (scope.storeIds !== "all" && !scope.storeIds.includes(current.store_id))
       throw new Error("No puedes eliminar este colaborador");
+    // Un Gerente de Tienda solo puede eliminar Cajero, Agente MBK o Seguridad de su tienda
+    // (no a otros gerentes ni gerentes de zona).
+    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "seguridad"].includes(current.role)) {
+      throw new Error(
+        "Como Gerente de Tienda solo puedes eliminar Cajero, Agente MBK o Seguridad",
+      );
+    }
     const { error } = await supabaseAdmin.from("employees").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };

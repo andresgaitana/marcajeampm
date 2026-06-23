@@ -117,10 +117,12 @@ function AdminDashboard() {
           <Users className="h-4 w-4 mr-2" />
           Colaboradores
         </TabsTrigger>
-        <TabsTrigger value="stores" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
-          <StoreIcon className="h-4 w-4 mr-2" />
-          Tiendas
-        </TabsTrigger>
+        {canManageOrg && (
+          <TabsTrigger value="stores" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+            <StoreIcon className="h-4 w-4 mr-2" />
+            Tiendas
+          </TabsTrigger>
+        )}
         {canManageOrg && (
           <TabsTrigger value="zones" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
             <MapZoneIcon className="h-4 w-4 mr-2" />
@@ -143,9 +145,11 @@ function AdminDashboard() {
       <TabsContent value="employees">
         <EmployeesPanel />
       </TabsContent>
-      <TabsContent value="stores">
-        <StoresPanel />
-      </TabsContent>
+      {canManageOrg && (
+        <TabsContent value="stores">
+          <StoresPanel />
+        </TabsContent>
+      )}
       {canManageOrg && (
         <TabsContent value="zones">
           <ZonesPanel />
@@ -543,7 +547,7 @@ function EmployeesPanel() {
                   <Button variant="ghost" size="sm" onClick={() => { setEditing(e); setOpen(true); }}>
                     <Pencil className="h-4 w-4" />
                   </Button>
-                  {!isOnlyStoreAdmin && (
+                  {(!isOnlyStoreAdmin || ["cajero", "agente_mbk", "seguridad"].includes(e.role)) && (
                     <Button variant="ghost" size="sm" onClick={() => remove(e.id)}>
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
