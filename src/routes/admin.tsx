@@ -5,6 +5,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { checkAdmin } from "@/lib/admin.functions";
 import { Button } from "@/components/ui/button";
 import { LogOut, Loader2, Clock, ShieldCheck } from "lucide-react";
+import logoAmpm from "@/assets/logo-ampm.png";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({ meta: [{ title: "Panel de Administración" }] }),
@@ -83,10 +84,8 @@ function AdminLayout() {
       <header className="bg-card border-b border-border sticky top-0 z-10">
         <div className="max-w-7xl mx-auto flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-[var(--gradient-brand)] flex items-center justify-center">
-              <ShieldCheck className="h-5 w-5 text-primary-foreground" />
-            </div>
-            <div>
+            <img src={logoAmpm} alt="AM/PM Centroamérica" className="h-10 w-auto" />
+            <div className="border-l border-border pl-3">
               <h1 className="text-base font-bold text-foreground">Panel de Administración</h1>
               <p className="text-xs text-muted-foreground">Control de Asistencia</p>
             </div>

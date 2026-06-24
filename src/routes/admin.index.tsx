@@ -857,13 +857,20 @@ function DashboardPanel() {
     return <div className="text-center py-12 text-muted-foreground">Cargando dashboard…</div>;
   }
 
+  const isSuper = m.scope.isAdmin || m.scope.isOperations;
+  const isZone = m.scope.isZoneAdmin && !isSuper;
+  const isStore = !isSuper && !isZone;
+  const levelTitle = isSuper
+    ? "Resumen ejecutivo · General"
+    : isZone ? "Resumen ejecutivo · Mi zona" : "Resumen ejecutivo · Mi tienda";
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold text-foreground">Dashboard</h2>
+          <h2 className="text-xl font-bold text-foreground">{levelTitle}</h2>
           <p className="text-sm text-muted-foreground">
-            Últimos {days} días · se actualiza cada 20 s
+            Hoy · histórico {days} días · se actualiza cada 20 s
           </p>
         </div>
         <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
@@ -877,10 +884,21 @@ function DashboardPanel() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KPI label="Entradas hoy" value={m.today_entries} accent="entry" />
-        <KPI label="Salidas hoy" value={m.today_exits} accent="exit" />
-        <KPI label="Dentro ahora" value={m.inside_now} accent="primary" />
-        <KPI label={`Marcajes (${days}d)`} value={m.total_period} accent="muted" />
+        {isStore ? (
+          <>
+            <KPI label="Colaboradores" value={m.employees_total} accent="muted" />
+            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% asistencia`} accent="entry" />
+            <KPI label="Dentro ahora" value={m.inside_now} accent="primary" />
+            <KPI label="Entradas hoy" value={m.today_entries} accent="exit" />
+          </>
+        ) : (
+          <>
+            <KPI label={isSuper ? "Tiendas" : "Tiendas (mi zona)"} value={m.stores_count} accent="primary" />
+            <KPI label="Colaboradores" value={m.employees_total} accent="muted" />
+            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% asistencia`} accent="entry" />
+            <KPI label="Dentro ahora" value={m.inside_now} accent="exit" />
+          </>
+        )}
       </div>
 
       {m.stuck_open.length > 0 && (
@@ -900,74 +918,76 @@ function DashboardPanel() {
         </div>
       )}
 
-      <div className="grid lg:grid-cols-2 gap-4">
-        <div className="bg-card rounded-2xl border border-border overflow-hidden">
-          <div className="p-4 border-b border-border">
-            <h3 className="font-semibold text-foreground">Dentro ahora</h3>
-            <p className="text-xs text-muted-foreground">Entrada sin salida registrada hoy</p>
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-secondary/50">
-                <TableHead>Colaborador</TableHead>
-                <TableHead>Desde</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {m.inside.length === 0 ? (
-                <TableRow><TableCell colSpan={2} className="text-center py-6 text-muted-foreground">Nadie adentro.</TableCell></TableRow>
-              ) : m.inside.map((i) => (
-                <TableRow key={i.id}>
-                  <TableCell>
-                    <div className="font-medium text-foreground">{i.full_name}</div>
-                    <div className="text-xs text-muted-foreground font-mono">{i.employee_code}</div>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {new Date(i.since).toLocaleTimeString("es-MX")}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-
-        {m.is_admin && (
+      {isStore && (
+        <div className="grid lg:grid-cols-2 gap-4">
           <div className="bg-card rounded-2xl border border-border overflow-hidden">
             <div className="p-4 border-b border-border">
-              <h3 className="font-semibold text-foreground">Ranking de tiendas</h3>
-              <p className="text-xs text-muted-foreground">Por actividad en el periodo</p>
+              <h3 className="font-semibold text-foreground">Asistencia de hoy</h3>
+              <p className="text-xs text-muted-foreground">Quién ya marcó entrada</p>
             </div>
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-secondary/50">
-                  <TableHead>Tienda</TableHead>
-                  <TableHead className="text-right">Hoy</TableHead>
-                  <TableHead className="text-right">Dentro</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {m.by_store.slice(0, 15).map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell>
-                      <span className="font-mono text-foreground">{s.code}</span>{" "}
-                      <span className="text-muted-foreground">· {s.name}</span>
-                    </TableCell>
-                    <TableCell className="text-right text-sm">{s.today_entries}/{s.today_exits}</TableCell>
-                    <TableCell className="text-right text-sm">{s.inside_now}</TableCell>
-                    <TableCell className="text-right text-sm font-medium">{s.period_total}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <div className="flex items-end gap-3 px-4 pt-4">
+              <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.attendance_pct}%</div>
+              <div className="text-sm text-muted-foreground pb-1">{m.present_today} de {m.employees_total} presentes · {m.inside_now} dentro</div>
+            </div>
+            <RoleTable rows={m.by_role} />
           </div>
-        )}
-      </div>
+          <InsideCard inside={m.inside} />
+        </div>
+      )}
+
+      {isStore && (
+        <div className="bg-card rounded-2xl border border-border overflow-hidden">
+          <div className="p-4 border-b border-border flex items-center gap-2">
+            <h3 className="font-semibold text-foreground">No han marcado hoy</h3>
+            <Badge variant="outline" className="border-amber-500 text-amber-700">{m.absent_today.length}</Badge>
+          </div>
+          {m.absent_today.length === 0 ? (
+            <p className="px-4 py-4 text-sm text-muted-foreground">Todos marcaron entrada. 🎉</p>
+          ) : (
+            <div className="p-4 flex flex-wrap gap-2">
+              {m.absent_today.map((a) => (
+                <span key={a.id} className="text-xs rounded-md border border-amber-200 bg-amber-50 text-amber-800 px-2 py-1">
+                  {a.full_name} <span className="font-mono opacity-70">{a.employee_code}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isZone && (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <StoreExecTable title="Por tienda (mi zona)" subtitle="Presentes / colaboradores y actividad" rows={m.by_store} />
+          <div className="bg-card rounded-2xl border border-border overflow-hidden">
+            <div className="p-4 border-b border-border">
+              <h3 className="font-semibold text-foreground">Por tipo de colaborador</h3>
+              <p className="text-xs text-muted-foreground">Presentes hoy / total</p>
+            </div>
+            <RoleTable rows={m.by_role} />
+          </div>
+        </div>
+      )}
+
+      {isSuper && (
+        <>
+          <ZoneExecTable rows={m.by_zone} />
+          <div className="grid lg:grid-cols-2 gap-4">
+            <StoreExecTable title="Por tienda (ranking)" subtitle="Top 15 por actividad" rows={m.by_store.slice(0, 15)} />
+            <div className="bg-card rounded-2xl border border-border overflow-hidden">
+              <div className="p-4 border-b border-border">
+                <h3 className="font-semibold text-foreground">Por tipo de colaborador</h3>
+                <p className="text-xs text-muted-foreground">Presentes hoy / total</p>
+              </div>
+              <RoleTable rows={m.by_role} />
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-semibold text-foreground">Asistencia por colaborador</h3>
-          <p className="text-xs text-muted-foreground">Click en una fila para ver el detalle semanal</p>
+          <p className="text-xs text-muted-foreground">Detalle del periodo · clic en una fila para ver la semana</p>
         </div>
         <Table>
           <TableHeader>
@@ -1011,7 +1031,7 @@ function DashboardPanel() {
   );
 }
 
-function KPI({ label, value, accent }: { label: string; value: number; accent: "entry" | "exit" | "primary" | "muted" }) {
+function KPI({ label, value, accent, sub }: { label: string; value: number | string; accent: "entry" | "exit" | "primary" | "muted"; sub?: string }) {
   const cls = {
     entry: "bg-[oklch(0.65_0.16_155)] text-white",
     exit: "bg-accent text-accent-foreground",
@@ -1022,6 +1042,129 @@ function KPI({ label, value, accent }: { label: string; value: number; accent: "
     <div className={`rounded-2xl p-4 ${cls}`}>
       <div className="text-3xl font-bold leading-none">{value}</div>
       <div className="text-xs mt-2 opacity-90">{label}</div>
+      {sub && <div className="text-[11px] mt-0.5 opacity-80">{sub}</div>}
+    </div>
+  );
+}
+
+function InsideCard({ inside }: { inside: Array<{ id: string; full_name: string; employee_code: string; since: string }> }) {
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border">
+        <h3 className="font-semibold text-foreground">Dentro ahora</h3>
+        <p className="text-xs text-muted-foreground">Entrada sin salida registrada hoy</p>
+      </div>
+      <Table>
+        <TableHeader><TableRow className="bg-secondary/50"><TableHead>Colaborador</TableHead><TableHead className="text-right">Desde</TableHead></TableRow></TableHeader>
+        <TableBody>
+          {inside.length === 0 ? (
+            <TableRow><TableCell colSpan={2} className="text-center py-6 text-muted-foreground">Nadie adentro.</TableCell></TableRow>
+          ) : inside.map((i) => (
+            <TableRow key={i.id}>
+              <TableCell><div className="font-medium text-foreground">{i.full_name}</div><div className="text-xs text-muted-foreground font-mono">{i.employee_code}</div></TableCell>
+              <TableCell className="text-right text-sm text-muted-foreground">{new Date(i.since).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function RoleTable({ rows }: { rows: Array<{ role: string; employees: number; present: number }> }) {
+  return (
+    <Table>
+      <TableHeader><TableRow className="bg-secondary/50"><TableHead>Tipo</TableHead><TableHead className="text-right">Presentes</TableHead><TableHead className="text-right">Total</TableHead></TableRow></TableHeader>
+      <TableBody>
+        {rows.length === 0 ? (
+          <TableRow><TableCell colSpan={3} className="text-center py-6 text-muted-foreground">Sin colaboradores.</TableCell></TableRow>
+        ) : rows.map((r) => (
+          <TableRow key={r.role}>
+            <TableCell className="text-foreground">{ROLE_LABELS[r.role as EmployeeRole] ?? r.role}</TableCell>
+            <TableCell className="text-right font-medium">{r.present}</TableCell>
+            <TableCell className="text-right text-muted-foreground">{r.employees}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function StoreExecTable({ title, subtitle, rows }: {
+  title: string; subtitle: string;
+  rows: Array<{ id: string; code: string; name: string; employees: number; present_today: number; inside_now: number; today_entries: number; period_total: number }>;
+}) {
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border">
+        <h3 className="font-semibold text-foreground">{title}</h3>
+        <p className="text-xs text-muted-foreground">{subtitle}</p>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50">
+            <TableHead>Tienda</TableHead>
+            <TableHead className="text-right">Presentes</TableHead>
+            <TableHead className="text-right">Dentro</TableHead>
+            <TableHead className="text-right">Entradas hoy</TableHead>
+            <TableHead className="text-right">Total</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow><TableCell colSpan={5} className="text-center py-6 text-muted-foreground">Sin tiendas.</TableCell></TableRow>
+            ) : rows.map((s) => (
+              <TableRow key={s.id}>
+                <TableCell><span className="font-mono text-foreground">{s.code}</span> <span className="text-muted-foreground">· {s.name}</span></TableCell>
+                <TableCell className="text-right text-sm">{s.present_today}/{s.employees}</TableCell>
+                <TableCell className="text-right text-sm">{s.inside_now}</TableCell>
+                <TableCell className="text-right text-sm">{s.today_entries}</TableCell>
+                <TableCell className="text-right text-sm font-medium">{s.period_total}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+function ZoneExecTable({ rows }: {
+  rows: Array<{ zone_id: string; code: string; name: string; stores: number; employees: number; present_today: number; inside_now: number; today_entries: number; period_total: number }>;
+}) {
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border">
+        <h3 className="font-semibold text-foreground">Por zona</h3>
+        <p className="text-xs text-muted-foreground">Resumen de cada zona</p>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50">
+            <TableHead>Zona</TableHead>
+            <TableHead className="text-right">Tiendas</TableHead>
+            <TableHead className="text-right">Colab.</TableHead>
+            <TableHead className="text-right">Presentes</TableHead>
+            <TableHead className="text-right">Dentro</TableHead>
+            <TableHead className="text-right">Entradas hoy</TableHead>
+            <TableHead className="text-right">Total</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="text-center py-6 text-muted-foreground">Sin zonas.</TableCell></TableRow>
+            ) : rows.map((z) => (
+              <TableRow key={z.zone_id}>
+                <TableCell><span className="font-mono text-foreground">{z.code}</span> <span className="text-muted-foreground">· {z.name}</span></TableCell>
+                <TableCell className="text-right text-sm">{z.stores}</TableCell>
+                <TableCell className="text-right text-sm">{z.employees}</TableCell>
+                <TableCell className="text-right text-sm font-medium">{z.present_today}</TableCell>
+                <TableCell className="text-right text-sm">{z.inside_now}</TableCell>
+                <TableCell className="text-right text-sm">{z.today_entries}</TableCell>
+                <TableCell className="text-right text-sm">{z.period_total}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }
@@ -1143,17 +1286,6 @@ function StoresPanel() {
           <p className="text-sm text-muted-foreground">{stores.length} registradas</p>
         </div>
         <div className="flex gap-2">
-          <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline">
-                <Sparkles className="h-4 w-4 mr-2" /> Carga masiva
-              </Button>
-            </DialogTrigger>
-            <BulkDialog
-              onDone={() => { setBulkOpen(false); qc.invalidateQueries({ queryKey: ["stores"] }); }}
-              bulkFn={bulkFn}
-            />
-          </Dialog>
           <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setEditing(null); }}>
             <DialogTrigger asChild>
               <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
@@ -1683,86 +1815,6 @@ function AdminUsersPanel({ isAdmin }: { isAdmin: boolean }) {
           <p className="text-sm text-muted-foreground">Gestiona quién puede acceder al panel y qué tiendas/zonas ve</p>
         </div>
         <div className="flex gap-2">
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={async () => {
-                if (!confirm("Crear/actualizar los 10 Gerentes de Zona (contraseña inicial Cambiar123!, PIN 0000)?")) return;
-                try {
-                  const r = await seedFn();
-                  const ok = r.results.filter((x) => x.status === "ok").length;
-                  const err = r.results.filter((x) => x.status !== "ok");
-                  toast.success(`GZ procesados: ${ok}/${r.results.length}`);
-                  if (err.length) toast.error(err.map((e) => `${e.email}: ${e.error}`).join(" | "));
-                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
-                  qc.invalidateQueries({ queryKey: ["employees"] });
-                } catch (e: unknown) {
-                  toast.error(e instanceof Error ? e.message : "Error");
-                }
-              }}
-            >
-              Cargar 10 GZ
-            </Button>
-          )}
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={async () => {
-                if (!confirm("Crear Marco Lopez como Gerente de Operaciones (contraseña inicial Cambiar123!)?")) return;
-                try {
-                  const r = await seedGoFn();
-                  if (!r.ok) { toast.error(r.error); return; }
-                  toast.success(`GO creado: ${r.email} (clave inicial: ${r.password})`);
-                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
-                } catch (e: unknown) {
-                  toast.error(e instanceof Error ? e.message : "Error");
-                }
-              }}
-            >
-              Crear Marco (GO)
-            </Button>
-          )}
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={async () => {
-                if (!confirm("Crear Vilma Berrios (RRHH) y Rodolfo Castillo (Gerente País) como Super Admin (contraseña inicial Cambiar123!)?")) return;
-                try {
-                  const r = await seedExtraFn();
-                  const ok = r.results.filter((x) => x.status === "ok").length;
-                  const err = r.results.filter((x) => x.status !== "ok");
-                  toast.success(`Super Admins procesados: ${ok}/${r.results.length} (clave inicial: ${r.password})`);
-                  if (err.length) toast.error(err.map((e) => `${e.email}: ${e.error}`).join(" | "));
-                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
-                } catch (e: unknown) {
-                  toast.error(e instanceof Error ? e.message : "Error");
-                }
-              }}
-            >
-              Crear Super Admins (Vilma + Rodolfo)
-            </Button>
-          )}
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={async () => {
-                if (!confirm("Cargar Gerentes de Tienda desde el archivo oficial (87 tiendas, contraseña inicial Cambiar123!)? También corrige la zona de cada tienda.")) return;
-                try {
-                  const r = await seedGtFn();
-                  const ok = r.results.filter((x) => x.status === "ok").length;
-                  const err = r.results.filter((x) => x.status !== "ok");
-                  toast.success(`GT procesados: ${ok}/${r.results.length}`);
-                  if (err.length) toast.error(err.map((e) => `${e.storeCode}: ${e.error}`).join(" | "));
-                  qc.invalidateQueries({ queryKey: ["adminUsers"] });
-                  qc.invalidateQueries({ queryKey: ["stores"] });
-                } catch (e: unknown) {
-                  toast.error(e instanceof Error ? e.message : "Error");
-                }
-              }}
-            >
-              Cargar GT (87)
-            </Button>
-          )}
           <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button className="bg-accent text-accent-foreground hover:bg-accent/90">

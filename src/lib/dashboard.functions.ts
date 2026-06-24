@@ -58,7 +58,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     const records = (rows ?? []) as Rec[];
 
     // Stores in scope
-    let storesQ = supabaseAdmin.from("stores").select("id, code, name, active");
+    let storesQ = supabaseAdmin.from("stores").select("id, code, name, active, zone_id");
     if (scope.storeIds !== "all") storesQ = storesQ.in("id", scope.storeIds);
     const { data: storesData } = await storesQ;
     const stores = storesData ?? [];
@@ -129,6 +129,69 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       });
     }
 
+    // ---- Vista ejecutiva por nivel ----
+    // Colaboradores activos en alcance
+    let empQ = supabaseAdmin
+      .from("employees")
+      .select("id, full_name, employee_code, role, store_id")
+      .eq("active", true);
+    if (scope.storeIds !== "all") empQ = empQ.in("store_id", scope.storeIds);
+    const { data: empData } = await empQ;
+    const employees = empData ?? [];
+
+    const { data: zoneData } = await supabaseAdmin.from("zones").select("id, code, name");
+    const zoneById = new Map((zoneData ?? []).map((z) => [z.id as string, z]));
+
+    // Presentes hoy = colaboradores con al menos una ENTRADA hoy
+    const presentIds = new Set(todayRecs.filter((r) => r.type === "entrada").map((r) => r.employee_id));
+
+    const ROLE_ORDER = ["cajero", "agente_mbk", "gerente", "seguridad", "gerente_zona"];
+    const roleMap = new Map<string, { role: string; employees: number; present: number }>();
+    const empStoreMap = new Map<string, { total: number; present: number }>();
+    for (const e of employees) {
+      const role = e.role as string;
+      if (!roleMap.has(role)) roleMap.set(role, { role, employees: 0, present: 0 });
+      const rr = roleMap.get(role)!; rr.employees++; if (presentIds.has(e.id)) rr.present++;
+      if (!empStoreMap.has(e.store_id)) empStoreMap.set(e.store_id, { total: 0, present: 0 });
+      const sr = empStoreMap.get(e.store_id)!; sr.total++; if (presentIds.has(e.id)) sr.present++;
+    }
+    const byRole = [...roleMap.values()].sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
+
+    const byStoreExec = byStore.map((s) => ({
+      ...s,
+      employees: empStoreMap.get(s.id)?.total ?? 0,
+      present_today: empStoreMap.get(s.id)?.present ?? 0,
+    }));
+
+    // Agregado por zona (para super admin / operaciones)
+    const zoneMap = new Map<string, {
+      zone_id: string; code: string; name: string; stores: number; employees: number;
+      present_today: number; inside_now: number; today_entries: number; period_total: number;
+    }>();
+    for (const s of stores) {
+      const zid = (s.zone_id as string | null) ?? "none";
+      const z = s.zone_id ? zoneById.get(s.zone_id as string) : null;
+      if (!zoneMap.has(zid)) zoneMap.set(zid, {
+        zone_id: zid, code: z?.code ?? "—", name: z?.name ?? "Sin zona",
+        stores: 0, employees: 0, present_today: 0, inside_now: 0, today_entries: 0, period_total: 0,
+      });
+      const row = zoneMap.get(zid)!;
+      const bs = byStoreExec.find((b) => b.id === s.id);
+      row.stores++;
+      if (bs) {
+        row.employees += bs.employees; row.present_today += bs.present_today;
+        row.inside_now += bs.inside_now; row.today_entries += bs.today_entries; row.period_total += bs.period_total;
+      }
+    }
+    const byZone = [...zoneMap.values()].sort((a, b) => b.period_total - a.period_total);
+
+    const employeesTotal = employees.length;
+    const presentToday = presentIds.size;
+    const attendancePct = employeesTotal > 0 ? Math.round((presentToday / employeesTotal) * 100) : 0;
+    const absentToday = employees
+      .filter((e) => !presentIds.has(e.id))
+      .map((e) => ({ id: e.id, full_name: e.full_name, employee_code: e.employee_code, role: e.role }));
+
     return {
       today_entries: todayEntries,
       today_exits: todayExits,
@@ -136,9 +199,24 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       total_period: records.length,
       inside,
       stuck_open: stuckOpen,
-      by_store: byStore,
+      by_store: byStoreExec,
       trend,
       is_admin: scope.isAdmin || scope.isOperations,
+      // Vista ejecutiva por nivel
+      scope: {
+        isAdmin: scope.isAdmin,
+        isOperations: scope.isOperations,
+        isZoneAdmin: scope.isZoneAdmin,
+        isStoreAdmin: scope.isStoreAdmin,
+      },
+      stores_count: stores.length,
+      zones_count: byZone.length,
+      employees_total: employeesTotal,
+      present_today: presentToday,
+      attendance_pct: attendancePct,
+      by_role: byRole,
+      by_zone: byZone,
+      absent_today: absentToday,
     };
   });
 
