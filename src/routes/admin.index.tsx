@@ -42,7 +42,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule } from "@/lib/dashboard.functions";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -111,6 +111,10 @@ function AdminDashboard() {
           <LayoutDashboard className="h-4 w-4 mr-2" />
           Dashboard
         </TabsTrigger>
+        <TabsTrigger value="schedule" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <CalendarIcon className="h-4 w-4 mr-2" />
+          Horario
+        </TabsTrigger>
         <TabsTrigger value="attendance" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <History className="h-4 w-4 mr-2" />
           Marcajes
@@ -140,6 +144,9 @@ function AdminDashboard() {
       </TabsList>
       <TabsContent value="dashboard">
         <DashboardPanel />
+      </TabsContent>
+      <TabsContent value="schedule">
+        <WeeklySchedulePanel />
       </TabsContent>
       <TabsContent value="attendance">
         <AttendancePanel />
@@ -701,6 +708,131 @@ function ZoneAssignmentsEditor({
         })}
         {stores.length === 0 && <p className="text-xs text-muted-foreground">No hay tiendas registradas.</p>}
       </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// HORARIO (solo lectura): quién marcó, por turno AM/PM y área
+// =====================================================================
+function addDaysISO(iso: string, n: number): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function fmtDM(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  return `${d.getUTCDate()}/${d.getUTCMonth() + 1}`;
+}
+
+const SCHEDULE_ROW_STYLES: Record<string, { label: string; chip: string }> = {
+  PROD_AM: { label: "text-amber-700", chip: "bg-amber-100 text-amber-900 border-amber-200" },
+  PROD_PM: { label: "text-blue-700", chip: "bg-blue-100 text-blue-900 border-blue-200" },
+  MBK_AM: { label: "text-orange-700", chip: "bg-orange-100 text-orange-900 border-orange-200" },
+  MBK_PM: { label: "text-sky-700", chip: "bg-sky-100 text-sky-900 border-sky-200" },
+};
+
+function WeeklySchedulePanel() {
+  const scheduleFn = useServerFn(getWeeklySchedule);
+  const storesFn = useServerFn(listStores);
+  const { data: stores, isLoading: storesLoading } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
+  const storeList = stores ?? [];
+  const [storeId, setStoreId] = useState<string>("");
+  const [weekStart, setWeekStart] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!storeId && storeList.length > 0) setStoreId(storeList[0].id);
+  }, [storeList, storeId]);
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ["schedule", storeId, weekStart ?? "current"],
+    queryFn: () => scheduleFn({ data: { storeId, ...(weekStart ? { weekStart } : {}) } }),
+    enabled: !!storeId,
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-foreground">Horario — quién marcó</h2>
+          <p className="text-sm text-muted-foreground">
+            Se llena solo con los marcajes reales (entrada), por turno AM/PM y área.
+          </p>
+        </div>
+        <Select value={storeId} onValueChange={setStoreId}>
+          <SelectTrigger className="w-60"><SelectValue placeholder="Selecciona tienda…" /></SelectTrigger>
+          <SelectContent>
+            {storeList.map((s) => (
+              <SelectItem key={s.id} value={s.id}>{s.code} · {s.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Button variant="outline" size="sm" disabled={!data} onClick={() => data && setWeekStart(addDaysISO(data.weekStart, -7))}>
+          ← Semana anterior
+        </Button>
+        <div className="text-sm text-muted-foreground">
+          {data ? `Semana del ${fmtDM(data.weekStart)} al ${fmtDM(data.weekEnd)}` : "…"}
+          {isFetching ? " · actualizando" : ""}
+        </div>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setWeekStart(undefined)}>Esta semana</Button>
+          <Button variant="outline" size="sm" disabled={!data} onClick={() => data && setWeekStart(addDaysISO(data.weekStart, 7))}>
+            Semana siguiente →
+          </Button>
+        </div>
+      </div>
+
+      <div className="bg-card rounded-2xl border border-border overflow-x-auto">
+        {isLoading || !data ? (
+          <div className="text-center py-12 text-muted-foreground">
+            {storeId ? "Cargando horario…" : storesLoading ? "Cargando…" : "No hay tiendas disponibles."}
+          </div>
+        ) : (
+          <table className="w-full border-collapse text-sm min-w-[860px]">
+            <thead>
+              <tr className="bg-secondary/50">
+                <th className="text-left p-3 font-semibold text-foreground w-48">Turno</th>
+                {data.days.map((d) => (
+                  <th key={d.date} className="text-left p-3 font-semibold text-foreground">
+                    <div>{d.label}</div>
+                    <div className="text-xs font-normal text-muted-foreground">{d.dayNum}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row) => {
+                const st = SCHEDULE_ROW_STYLES[row.key] ?? { label: "", chip: "bg-secondary border-border" };
+                return (
+                  <tr key={row.key} className="border-t border-border align-top">
+                    <td className={`p-3 font-semibold ${st.label}`}>{row.label}</td>
+                    {row.cells.map((cell) => (
+                      <td key={cell.date} className="p-2 align-top">
+                        {cell.people.length === 0 ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            {cell.people.map((p) => (
+                              <span key={p.id} className={`text-xs rounded-md border px-2 py-1 ${st.chip}`}>{p.name}</span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        El turno AM/PM se calcula por la hora de <strong>entrada</strong> (hora de Nicaragua). Área: Agente MBK → MBK; los demás roles → Productos.
+        Este horario es de solo lectura (refleja marcajes reales), no es planificación.
+      </p>
     </div>
   );
 }

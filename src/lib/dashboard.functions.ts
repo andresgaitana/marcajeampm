@@ -21,6 +21,16 @@ type Rec = {
   store_id: string;
 };
 
+// Nicaragua = UTC-6 todo el año (sin horario de verano desde 2006).
+const NI_OFFSET_MS = 6 * 3600 * 1000;
+const DOW_ES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+
+/** Fecha local (yyyy-mm-dd) y hora local (0-23) de Nicaragua para un timestamp UTC. */
+function managuaParts(iso: string): { date: string; hour: number } {
+  const local = new Date(new Date(iso).getTime() - NI_OFFSET_MS);
+  return { date: local.toISOString().slice(0, 10), hour: local.getUTCHours() };
+}
+
 export const getDashboardMetrics = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) =>
@@ -313,4 +323,103 @@ export const getEmployeeWeeklyMarks = createServerFn({ method: "POST" })
       total_marks: totalMarks,
       days_present: daysPresent,
     };
+  });
+
+/**
+ * Horario semanal (solo lectura) de UNA tienda: muestra quién MARCÓ entrada cada
+ * día, clasificado por área (MBK / Productos) y turno AM/PM según la hora local
+ * de Nicaragua. Bandas:
+ *   Productos: AM 6:00-18:00, PM 18:00-6:00.
+ *   MBK:       AM 6:00-14:00, PM 14:00-22:00.
+ * Área: rol agente_mbk → MBK; cualquier otro rol → Productos.
+ */
+export const getWeeklySchedule = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid(),
+      weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), // lunes (fecha local NI)
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    if (scope.storeIds !== "all" && !scope.storeIds.includes(data.storeId))
+      throw new Error("Sin acceso a esta tienda");
+
+    // Lunes 00:00 hora Nicaragua de la semana solicitada (o la actual).
+    // Trabajamos con un Date cuyos campos UTC representan la hora local NI.
+    let mondayLocal: Date;
+    if (data.weekStart) {
+      mondayLocal = new Date(data.weekStart + "T00:00:00Z");
+      // Normalizar a lunes por si llega otra fecha (defensivo).
+      const dow = (mondayLocal.getUTCDay() + 6) % 7; // 0 = lunes
+      if (dow !== 0) mondayLocal.setUTCDate(mondayLocal.getUTCDate() - dow);
+    } else {
+      const nowLocal = new Date(Date.now() - NI_OFFSET_MS);
+      const dow = (nowLocal.getUTCDay() + 6) % 7; // 0 = lunes
+      mondayLocal = new Date(nowLocal);
+      mondayLocal.setUTCHours(0, 0, 0, 0);
+      mondayLocal.setUTCDate(mondayLocal.getUTCDate() - dow);
+    }
+    // Rango real en UTC para la consulta (lunes 00:00 NI = +6 h UTC).
+    const fromUTC = new Date(mondayLocal.getTime() + NI_OFFSET_MS);
+    const toUTC = new Date(fromUTC.getTime() + 7 * 24 * 3600 * 1000);
+
+    const { data: rows } = await supabaseAdmin
+      .from("attendance_records")
+      .select("created_at, employee:employees(id, full_name, role)")
+      .eq("store_id", data.storeId)
+      .eq("type", "entrada")
+      .gte("created_at", fromUTC.toISOString())
+      .lt("created_at", toUTC.toISOString())
+      .order("created_at", { ascending: true })
+      .limit(5000);
+
+    // 7 columnas: lunes..domingo (fechas locales).
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(mondayLocal.getTime() + i * 24 * 3600 * 1000);
+      return {
+        date: d.toISOString().slice(0, 10),
+        label: DOW_ES[d.getUTCDay()],
+        dayNum: `${d.getUTCDate()}/${d.getUTCMonth() + 1}`,
+      };
+    });
+    const dayIndex = new Map(days.map((d, i) => [d.date, i] as const));
+
+    const rowDefs = [
+      { key: "PROD_AM", area: "Productos", shift: "AM", label: "Productos AM · 6:00-18:00" },
+      { key: "PROD_PM", area: "Productos", shift: "PM", label: "Productos PM · 18:00-6:00" },
+      { key: "MBK_AM", area: "MBK", shift: "AM", label: "MBK AM · 6:00-14:00" },
+      { key: "MBK_PM", area: "MBK", shift: "PM", label: "MBK PM · 14:00-22:00" },
+    ] as const;
+    // Dedup por colaborador (id), no por nombre, para no colapsar homónimos.
+    const buckets: Record<string, Array<Map<string, string>>> = {};
+    for (const r of rowDefs) buckets[r.key] = days.map(() => new Map<string, string>());
+
+    for (const rec of rows ?? []) {
+      const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
+      if (!emp) continue;
+      const { date, hour } = managuaParts(rec.created_at as string);
+      const di = dayIndex.get(date);
+      if (di === undefined) continue;
+      const isMbk = emp.role === "agente_mbk";
+      const shift: "AM" | "PM" = isMbk
+        ? (hour >= 6 && hour < 14 ? "AM" : "PM")
+        : (hour >= 6 && hour < 18 ? "AM" : "PM");
+      const key = `${isMbk ? "MBK" : "PROD"}_${shift}`;
+      buckets[key][di].set(emp.id as string, (emp.full_name as string) ?? "—");
+    }
+
+    const gridRows = rowDefs.map((r) => ({
+      key: r.key,
+      area: r.area,
+      shift: r.shift,
+      label: r.label,
+      cells: buckets[r.key].map((m, i) => ({
+        date: days[i].date,
+        people: [...m.entries()].map(([id, name]) => ({ id, name })),
+      })),
+    }));
+
+    return { weekStart: days[0].date, weekEnd: days[6].date, days, rows: gridRows };
   });
