@@ -28,6 +28,8 @@ import {
   updateStore,
   deleteStore,
   bulkCreateStores,
+  setStoreTerminalPin,
+  resetManagerPassword,
 } from "@/lib/stores.functions";
 import {
   listZones,
@@ -115,6 +117,7 @@ function AdminDashboard() {
   const checkFn = useServerFn(checkAdmin);
   const { data: access } = useQuery({ queryKey: ["adminAccess"], queryFn: () => checkFn() });
   const canManageOrg = !!(access?.isAdmin || access?.isOperations);
+  const canSeeStores = canManageOrg || !!access?.isZoneAdmin;
   return (
     <Tabs defaultValue="dashboard" className="space-y-4">
       <TabsList className="bg-card border border-border flex-wrap h-auto">
@@ -134,7 +137,7 @@ function AdminDashboard() {
           <Users className="h-4 w-4 mr-2" />
           Colaboradores
         </TabsTrigger>
-        {canManageOrg && (
+        {canSeeStores && (
           <TabsTrigger value="stores" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
             <StoreIcon className="h-4 w-4 mr-2" />
             Tiendas
@@ -165,9 +168,9 @@ function AdminDashboard() {
       <TabsContent value="employees">
         <EmployeesPanel />
       </TabsContent>
-      {canManageOrg && (
+      {canSeeStores && (
         <TabsContent value="stores">
-          <StoresPanel />
+          {canManageOrg ? <StoresPanel /> : <ZoneStoresPanel />}
         </TabsContent>
       )}
       {canManageOrg && (
@@ -903,8 +906,8 @@ function DashboardPanel() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
           <h2 className="text-xl font-bold text-foreground">{levelTitle}</h2>
           <p className="text-sm text-muted-foreground">
             Hoy · histórico {days} días · se actualiza cada 20 s
@@ -1212,6 +1215,107 @@ function ZoneExecTable({ rows }: {
 }
 
 // =====================================================================
+// TIENDAS — panel limitado del Gerente de Zona (solo PIN terminal + contraseña GT)
+// =====================================================================
+function ZoneStoresPanel() {
+  const storesFn = useServerFn(listStores);
+  const setPinFn = useServerFn(setStoreTerminalPin);
+  const resetPwFn = useServerFn(resetManagerPassword);
+  const { data, isLoading } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
+  const stores = data ?? [];
+  const [pinStore, setPinStore] = useState<{ id: string; label: string } | null>(null);
+  const [pinValue, setPinValue] = useState("");
+
+  const savePin = async () => {
+    if (!pinStore) return;
+    if (!/^\d{4,8}$/.test(pinValue)) { toast.error("PIN de 4-8 dígitos"); return; }
+    try {
+      await setPinFn({ data: { storeId: pinStore.id, terminal_pin: pinValue } });
+      toast.success("PIN de terminal actualizado");
+      setPinStore(null);
+      setPinValue("");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const resetPw = async (id: string, label: string) => {
+    if (!confirm(`¿Restablecer la contraseña de acceso del Gerente de Tienda de ${label}?`)) return;
+    try {
+      const r = await resetPwFn({ data: { storeId: id } });
+      if (!r.ok) { toast.error(r.error); return; }
+      toast.success("Contraseña restablecida");
+      window.prompt(`Contraseña temporal para ${r.emails.join(", ")} (cópiala y entrégala al GT):`, r.password);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-bold text-foreground">Tiendas de mi zona</h2>
+        <p className="text-sm text-muted-foreground">
+          Puedes cambiar el <strong>PIN de terminal</strong> y restablecer la <strong>contraseña del Gerente de Tienda</strong>. El resto de la configuración la gestiona un Super administrador.
+        </p>
+      </div>
+      <div className="bg-card rounded-2xl border border-border overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-secondary/50">
+              <TableHead>Tienda</TableHead>
+              <TableHead className="text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={2} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+            ) : stores.length === 0 ? (
+              <TableRow><TableCell colSpan={2} className="text-center py-8 text-muted-foreground">No tienes tiendas asignadas.</TableCell></TableRow>
+            ) : stores.map((s) => (
+              <TableRow key={s.id}>
+                <TableCell><span className="font-mono text-foreground">{s.code}</span> <span className="text-muted-foreground">· {s.name}</span></TableCell>
+                <TableCell className="text-right space-x-1 whitespace-nowrap">
+                  <Button variant="outline" size="sm" onClick={() => { setPinStore({ id: s.id, label: `${s.code} · ${s.name}` }); setPinValue(""); }}>
+                    <KeyRound className="h-4 w-4 mr-1 text-amber-600" /> PIN terminal
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => resetPw(s.id, `${s.code} · ${s.name}`)}>
+                    <ShieldCheck className="h-4 w-4 mr-1" /> Contraseña GT
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      <Dialog open={!!pinStore} onOpenChange={(o) => { if (!o) { setPinStore(null); setPinValue(""); } }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>PIN de terminal — {pinStore?.label}</DialogTitle></DialogHeader>
+          <div>
+            <Label>Nuevo PIN de terminal (4-8 dígitos)</Label>
+            <Input
+              type="text"
+              inputMode="numeric"
+              maxLength={8}
+              value={pinValue}
+              onChange={(e) => setPinValue(e.target.value.replace(/\D/g, ""))}
+              placeholder="Ej. 2580"
+              autoFocus
+            />
+            <p className="text-xs text-muted-foreground mt-1">Con este código se vincula la tablet de la tienda al marcaje.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPinStore(null)}>Cancelar</Button>
+            <Button onClick={savePin} className="bg-accent text-accent-foreground hover:bg-accent/90">Guardar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// =====================================================================
 // TIENDAS
 // =====================================================================
 function StoresPanel() {
@@ -1220,8 +1324,21 @@ function StoresPanel() {
   const updateFn = useServerFn(updateStore);
   const deleteFn = useServerFn(deleteStore);
   const bulkFn = useServerFn(bulkCreateStores);
+  const resetPwFn = useServerFn(resetManagerPassword);
   const zonesFn = useServerFn(listZones);
   const qc = useQueryClient();
+
+  const resetPwStore = async (id: string, label: string) => {
+    if (!confirm(`¿Restablecer la contraseña de acceso del Gerente de Tienda de ${label}?`)) return;
+    try {
+      const r = await resetPwFn({ data: { storeId: id } });
+      if (!r.ok) { toast.error(r.error); return; }
+      toast.success("Contraseña restablecida");
+      window.prompt(`Contraseña temporal para ${r.emails.join(", ")} (cópiala y entrégala al GT):`, r.password);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error");
+    }
+  };
 
   const { data, isLoading } = useQuery({ queryKey: ["stores"], queryFn: () => listFn() });
   const { data: zones } = useQuery({ queryKey: ["zones"], queryFn: () => zonesFn() });
@@ -1455,6 +1572,9 @@ function StoresPanel() {
                   )}
                 </TableCell>
                 <TableCell className="text-right">
+                  <Button variant="ghost" size="sm" title="Restablecer contraseña del Gerente de Tienda" onClick={() => resetPwStore(s.id, `${s.code} · ${s.name}`)}>
+                    <ShieldCheck className="h-4 w-4 text-primary" />
+                  </Button>
                   <Button variant="ghost" size="sm" onClick={() => { setEditing(s); setOpen(true); }}>
                     <Pencil className="h-4 w-4" />
                   </Button>

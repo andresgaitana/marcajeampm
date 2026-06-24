@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
@@ -171,6 +172,61 @@ export const deleteStore = createServerFn({ method: "POST" })
     const { error } = await supabaseAdmin.from("stores").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
+  });
+
+/**
+ * Cambiar SOLO el PIN de terminal de una tienda. Permitido a Super admin (todas)
+ * y al Gerente de Zona en las tiendas de SU zona. No toca el resto de la config.
+ */
+export const setStoreTerminalPin = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid(),
+      terminal_pin: z.string().trim().regex(/^\d{4,8}$/, "PIN debe ser 4-8 dígitos"),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    await assertCanManageStore(context.userId, data.storeId);
+    const { error } = await supabaseAdmin
+      .from("stores")
+      .update({ terminal_pin_hash: hashPin(data.terminal_pin) })
+      .eq("id", data.storeId);
+    if (error) throw new Error(error.message);
+    return { ok: true as const };
+  });
+
+/**
+ * Reiniciar la contraseña de login (panel) del/los Gerente(s) de Tienda de una
+ * tienda. Permitido a Super admin (cualquiera) y al GZ en su zona. Solo afecta a
+ * usuarios con rol gerente_tienda (no toca admins ni GZ). Devuelve una contraseña
+ * temporal para entregar al GT.
+ */
+export const resetManagerPassword = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({ storeId: z.string().uuid() }).parse(i))
+  .handler(async ({ context, data }) => {
+    await assertCanManageStore(context.userId, data.storeId);
+    const { data: mgrs } = await supabaseAdmin
+      .from("store_managers").select("user_id").eq("store_id", data.storeId);
+    const userIds = [...new Set((mgrs ?? []).map((m) => m.user_id as string))];
+    if (userIds.length === 0)
+      return { ok: false as const, error: "Esta tienda no tiene Gerente de Tienda con acceso al panel." };
+    // Solo usuarios con rol gerente_tienda (no admin/ops/gz).
+    const { data: roleRows } = await supabaseAdmin
+      .from("user_roles").select("user_id").in("user_id", userIds).eq("role", "gerente_tienda");
+    const gtIds = [...new Set((roleRows ?? []).map((r) => r.user_id as string))];
+    if (gtIds.length === 0)
+      return { ok: false as const, error: "Esta tienda no tiene Gerente de Tienda." };
+    // Temporal de alta entropía (~2^40) pero tecleable: "Ampm-" + 10 hex.
+    const temp = "Ampm-" + crypto.randomBytes(5).toString("hex");
+    const emails: string[] = [];
+    for (const uid of gtIds) {
+      const { data: upd, error } = await supabaseAdmin.auth.admin.updateUserById(uid, { password: temp });
+      if (error) return { ok: false as const, error: error.message };
+      if (upd?.user?.email) emails.push(upd.user.email);
+    }
+    return { ok: true as const, password: temp, emails };
   });
 
 /** List managers (with email) for a given store. */

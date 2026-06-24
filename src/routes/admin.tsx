@@ -82,15 +82,15 @@ function AdminLayout() {
   return (
     <div className="min-h-screen bg-secondary/40">
       <header className="bg-card border-b border-border sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto flex items-center justify-between p-4">
-          <div className="flex items-center gap-3">
-            <img src={logoAmpm} alt="AM/PM Centroamérica" className="h-10 w-auto" />
-            <div className="border-l border-border pl-3">
-              <h1 className="text-base font-bold text-foreground">Panel de Administración</h1>
-              <p className="text-xs text-muted-foreground">Control de Asistencia</p>
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 p-3 md:p-4">
+          <div className="flex items-center gap-2 md:gap-3 min-w-0">
+            <img src={logoAmpm} alt="AM/PM Centroamérica" className="h-9 md:h-10 w-auto shrink-0" />
+            <div className="border-l border-border pl-2 md:pl-3 min-w-0">
+              <h1 className="text-sm md:text-base font-bold text-foreground truncate">Panel de Administración</h1>
+              <p className="text-xs text-muted-foreground truncate">Control de Asistencia</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 md:gap-2 shrink-0">
             <Link to="/">
               <Button variant="ghost" size="sm">
                 <Clock className="h-4 w-4 mr-1" />
