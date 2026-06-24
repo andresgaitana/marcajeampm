@@ -26,6 +26,9 @@ export const Route = createFileRoute("/")({
   component: MarcajePage,
 });
 
+// Aviso de precisión en el banner (el servidor es la autoridad real).
+const GEO_MAX_ACCURACY_M = 100;
+
 type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "newpin" | "done";
 type AttType = "entrada" | "salida";
 type AuthMethod = "pin" | "password" | "webauthn";
@@ -355,12 +358,15 @@ function MarcajePage() {
         </div>
       )}
 
-      {/* GPS status banner */}
-      <div className={`px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 ${geo ? "bg-success/10 text-success" : "bg-amber-500/10 text-amber-700"}`}>
-        {geo ? (
+      {/* GPS status banner. GEO_MAX_ACCURACY_M debe coincidir con el umbral del
+          servidor (GEOFENCE_MAX_ACCURACY_M); es solo un aviso, el servidor manda. */}
+      <div className={`px-4 py-1.5 text-xs flex items-center justify-center gap-1.5 ${geo && geo.accuracy <= GEO_MAX_ACCURACY_M ? "bg-success/10 text-success" : "bg-amber-500/10 text-amber-700"}`}>
+        {geo && geo.accuracy <= GEO_MAX_ACCURACY_M ? (
           <><MapPin className="h-3 w-3" /> Ubicación detectada (±{Math.round(geo.accuracy)}m)</>
+        ) : geo ? (
+          <><MapPinOff className="h-3 w-3" /> Ubicación poco precisa (±{Math.round(geo.accuracy)}m) — activa GPS de alta precisión o sal al aire libre</>
         ) : geoDenied ? (
-          <><MapPinOff className="h-3 w-3" /> Sin permiso de GPS — el marcaje quedará "sin ubicación"</>
+          <><MapPinOff className="h-3 w-3" /> Sin permiso de GPS — sin ubicación NO podrás marcar. Actívalo.</>
         ) : (
           <><MapPin className="h-3 w-3 animate-pulse" /> Detectando ubicación…</>
         )}
