@@ -42,7 +42,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance } from "@/lib/dashboard.functions";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -840,8 +840,34 @@ function WeeklySchedulePanel() {
 function DashboardPanel() {
   const metricsFn = useServerFn(getDashboardMetrics);
   const summaryFn = useServerFn(getEmployeeSummary);
+  const exportFn = useServerFn(exportAttendance);
   const [days, setDays] = useState(7);
+  const [exporting, setExporting] = useState(false);
   const [openEmployee, setOpenEmployee] = useState<{ id: string; name: string } | null>(null);
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const rows = await exportFn({ data: { days } });
+      const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+      const header = ["Fecha", "Hora", "Codigo", "Nombre", "Rol", "Tienda", "Tipo", "UbicacionValida"];
+      const lines = [header.join(",")].concat(
+        rows.map((r) => [r.fecha, r.hora, r.codigo, esc(r.nombre), r.rol, esc(r.tienda), r.tipo, r.ubicacion_valida].join(",")),
+      );
+      const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `marcajes_${days}d.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (rows.length === 0) toast.message("No hay marcajes en el periodo seleccionado.");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error al exportar");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const { data: m, isLoading } = useQuery({
     queryKey: ["dashboard", days],
@@ -873,14 +899,19 @@ function DashboardPanel() {
             Hoy · histórico {days} días · se actualiza cada 20 s
           </p>
         </div>
-        <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="1">Hoy</SelectItem>
-            <SelectItem value="7">7 días</SelectItem>
-            <SelectItem value="30">30 días</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={doExport} disabled={exporting} title="Descargar los marcajes del periodo (Excel/CSV)">
+            <Download className="h-4 w-4 mr-1" /> {exporting ? "Generando…" : "Descargar"}
+          </Button>
+          <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1">Hoy</SelectItem>
+              <SelectItem value="7">7 días</SelectItem>
+              <SelectItem value="30">30 días</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

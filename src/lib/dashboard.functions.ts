@@ -404,6 +404,50 @@ export const getEmployeeWeeklyMarks = createServerFn({ method: "POST" })
   });
 
 /**
+ * Exporta los marcajes del periodo (para descargar como Excel/CSV y respaldar
+ * antes de cualquier purga). Solo lee datos; no borra nada. Respeta el alcance.
+ */
+export const exportAttendance = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      days: z.number().int().min(1).max(366).default(30),
+      storeId: z.string().uuid().optional(),
+    }).parse(i ?? {}),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    const since = new Date();
+    since.setDate(since.getDate() - data.days);
+    let q = supabaseAdmin
+      .from("attendance_records")
+      .select("created_at, type, location_valid, employee:employees(full_name, employee_code, role), store:stores(code, name)")
+      .gte("created_at", since.toISOString())
+      .order("created_at", { ascending: false })
+      .limit(20000);
+    if (data.storeId) q = q.eq("store_id", data.storeId);
+    if (scope.storeIds !== "all") q = q.in("store_id", scope.storeIds);
+    const { data: rows, error } = await q;
+    if (error) throw new Error(error.message);
+    return (rows ?? []).map((r) => {
+      const e = Array.isArray(r.employee) ? r.employee[0] : r.employee;
+      const s = Array.isArray(r.store) ? r.store[0] : r.store;
+      // Hora local de Nicaragua (UTC-6)
+      const local = new Date(new Date(r.created_at as string).getTime() - NI_OFFSET_MS);
+      return {
+        fecha: local.toISOString().slice(0, 10),
+        hora: local.toISOString().slice(11, 16),
+        codigo: e?.employee_code ?? "",
+        nombre: e?.full_name ?? "",
+        rol: e?.role ?? "",
+        tienda: s ? `${s.code} · ${s.name}` : "",
+        tipo: r.type,
+        ubicacion_valida: r.location_valid ? "Sí" : "No",
+      };
+    });
+  });
+
+/**
  * Horario semanal (solo lectura) de UNA tienda: muestra quién MARCÓ entrada cada
  * día, clasificado por área (MBK / Productos) y turno AM/PM según la hora local
  * de Nicaragua. Bandas:
