@@ -252,18 +252,12 @@ export const markAttendance = createServerFn({ method: "POST" })
       return { ok: false as const, error: "Esta tienda no tiene ubicación configurada. Contacta al administrador." };
     }
     if (data.latitude == null || data.longitude == null) {
-      return { ok: false as const, error: "Activa la ubicación (GPS) del dispositivo para poder marcar." };
+      return { ok: false as const, error: "Activa la ubicación del dispositivo para poder marcar." };
     }
-    // Precisión mínima del GPS: rechazar ubicaciones imprecisas (WiFi/IP de
-    // laptops/PC) que podrían "caer" cerca de la tienda sin que la persona esté
-    // realmente presente. Umbral configurable (GEOFENCE_MAX_ACCURACY_M, def. 100 m).
-    const maxAccuracyM = Number(process.env.GEOFENCE_MAX_ACCURACY_M) || 100;
-    if (data.locationAccuracyM == null || data.locationAccuracyM > maxAccuracyM) {
-      return {
-        ok: false as const,
-        error: `No pudimos confirmar tu ubicación con precisión${data.locationAccuracyM != null ? ` (±${Math.round(data.locationAccuracyM)} m)` : ""}. Activa el GPS de alta precisión y marca al aire libre o cerca de una ventana.`,
-      };
-    }
+    // Nota: NO se exige precisión de GPS. Las terminales son tablets WiFi (sin GPS
+    // real) que ubican por WiFi/IP; solo validamos que la ubicación reportada caiga
+    // dentro del radio de la tienda. La presencia la refuerzan el terminal fijo en
+    // la tienda + la selfie en vivo + el reconocimiento facial.
     distanceM = haversineMeters(store.latitude, store.longitude, data.latitude, data.longitude);
     const locationValid = distanceM <= (store.geofence_radius_m ?? 300);
     if (!locationValid) {
