@@ -9,7 +9,8 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
  *   derivada en vivo (no depende de datos sembrados estáticos).
  * - gerente (Gerente de Tienda): además, cualquier tienda listada en
  *   employee_store_assignments (soporte multi-tienda).
- * - cajero / agente_mbk / seguridad: SOLO su tienda ancla.
+ * - cualquier otro rol (cajero / agente_mbk / limpieza / seguridad interna o
+ *   tercerizada): SOLO su tienda ancla.
  */
 export async function employeeCanMarkAtStore(
   employee: { id: string; role: string; store_id: string },

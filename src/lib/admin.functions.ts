@@ -105,7 +105,7 @@ export const listEmployees = createServerFn({ method: "GET" })
 const employeeInput = z.object({
   employee_code: z.string().trim().min(1).max(32).regex(/^[a-zA-Z0-9_-]+$/),
   full_name: z.string().trim().min(1).max(120),
-  role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona"]),
+  role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada"]),
   store_id: z.string().uuid(),
   pin: z.string().trim().regex(/^\d{4,8}$/, "PIN debe ser 4-8 dígitos"),
   face_descriptor: z.array(z.number()).length(128).optional(),
@@ -123,9 +123,9 @@ export const createEmployee = createServerFn({ method: "POST" })
     // Cajero, Agente MBK o Seguridad. No puede crear Gerente ni Gerente de Zona.
     const isOnlyStoreAdmin =
       scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
-    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "seguridad"].includes(data.role)) {
+    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(data.role)) {
       throw new Error(
-        "Como Gerente de Tienda solo puedes crear Cajero, Agente MBK o Seguridad",
+        "Como Gerente de Tienda solo puedes crear Agentes: Cajero, Agente MBK, Personal de Limpieza o Seguridad",
       );
     }
     const { error } = await supabaseAdmin.from("employees").insert({
@@ -321,7 +321,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       .object({
         id: z.string().uuid(),
         full_name: z.string().trim().min(1).max(120).optional(),
-        role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona"]).optional(),
+        role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada"]).optional(),
         store_id: z.string().uuid().optional(),
         active: z.boolean().optional(),
         pin: z.string().trim().regex(/^\d{4,8}$/).optional(),
@@ -341,7 +341,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       throw new Error("No puedes mover el colaborador a esa tienda");
     const patch: {
       full_name?: string;
-      role?: "cajero" | "gerente" | "seguridad" | "agente_mbk" | "gerente_zona";
+      role?: "cajero" | "gerente" | "seguridad" | "agente_mbk" | "gerente_zona" | "personal_limpieza" | "seguridad_interna" | "seguridad_tercerizada";
       store_id?: string;
       active?: boolean;
       pin_hash?: string;
@@ -384,8 +384,8 @@ export const resetEmployeePin = createServerFn({ method: "POST" })
     const isSuper = scope.isAdmin || scope.isOperations;
     const isZoneOnly = scope.isZoneAdmin && !isSuper;
     const isStoreOnly = scope.isStoreAdmin && !isSuper && !scope.isZoneAdmin;
-    if (isStoreOnly && !["cajero", "agente_mbk", "seguridad"].includes(emp.role))
-      throw new Error("Como Gerente de Tienda solo puedes restablecer el PIN de tus Agentes (cajero, MBK, seguridad).");
+    if (isStoreOnly && !["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(emp.role))
+      throw new Error("Como Gerente de Tienda solo puedes restablecer el PIN de tus Agentes (Cajero, MBK, Limpieza, Seguridad).");
     if (isZoneOnly && emp.role === "gerente_zona")
       throw new Error("No puedes restablecer el PIN de otro Gerente de Zona.");
 
@@ -410,9 +410,9 @@ export const deleteEmployee = createServerFn({ method: "POST" })
       throw new Error("No puedes eliminar este colaborador");
     // Un Gerente de Tienda solo puede eliminar Cajero, Agente MBK o Seguridad de su tienda
     // (no a otros gerentes ni gerentes de zona).
-    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "seguridad"].includes(current.role)) {
+    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(current.role)) {
       throw new Error(
-        "Como Gerente de Tienda solo puedes eliminar Cajero, Agente MBK o Seguridad",
+        "Como Gerente de Tienda solo puedes eliminar Agentes: Cajero, Agente MBK, Personal de Limpieza o Seguridad",
       );
     }
     const { error } = await supabaseAdmin.from("employees").delete().eq("id", data.id);

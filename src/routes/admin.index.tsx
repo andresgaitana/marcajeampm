@@ -83,14 +83,25 @@ export const Route = createFileRoute("/admin/")({
   component: AdminDashboard,
 });
 
-type EmployeeRole = "cajero" | "gerente" | "seguridad" | "agente_mbk" | "gerente_zona";
+type EmployeeRole =
+  | "cajero"
+  | "gerente"
+  | "seguridad"
+  | "agente_mbk"
+  | "gerente_zona"
+  | "personal_limpieza"
+  | "seguridad_interna"
+  | "seguridad_tercerizada";
 
 const ROLE_LABELS: Record<EmployeeRole, string> = {
   cajero: "Cajero",
   agente_mbk: "Agente MBK",
+  personal_limpieza: "Personal de Limpieza",
+  seguridad_interna: "Seguridad Interna",
+  seguridad_tercerizada: "Seguridad Tercerizada",
+  seguridad: "Seguridad",
   gerente: "Gerente",
   gerente_zona: "Gerente de Zona",
-  seguridad: "Seguridad",
 };
 
 const ADMIN_ROLE_LABELS: Record<string, string> = {
@@ -329,12 +340,12 @@ function EmployeesPanel() {
   const canResetPin = (role: string) => {
     if (isSuper) return true;
     if (isZoneOnly) return role !== "gerente_zona";
-    if (isOnlyStoreAdmin) return ["cajero", "agente_mbk", "seguridad"].includes(role);
+    if (isOnlyStoreAdmin) return ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(role);
     return false;
   };
   const allowedRoles: EmployeeRole[] = isOnlyStoreAdmin
-    ? ["cajero", "agente_mbk", "seguridad"]
-    : ["cajero", "agente_mbk", "gerente", "gerente_zona", "seguridad"];
+    ? ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada"]
+    : ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "gerente", "gerente_zona"];
 
   const employees = data ?? [];
   const storeList = stores ?? [];
@@ -629,7 +640,7 @@ function EmployeesPanel() {
                   <Button variant="ghost" size="sm" onClick={() => { setEditing(e); setOpen(true); }}>
                     <Pencil className="h-4 w-4" />
                   </Button>
-                  {(!isOnlyStoreAdmin || ["cajero", "agente_mbk", "seguridad"].includes(e.role)) && (
+                  {(!isOnlyStoreAdmin || ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(e.role)) && (
                     <Button variant="ghost" size="sm" onClick={() => remove(e.id)}>
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>

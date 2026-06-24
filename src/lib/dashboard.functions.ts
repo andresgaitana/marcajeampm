@@ -145,7 +145,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     // Presentes hoy = colaboradores con al menos una ENTRADA hoy
     const presentIds = new Set(todayRecs.filter((r) => r.type === "entrada").map((r) => r.employee_id));
 
-    const ROLE_ORDER = ["cajero", "agente_mbk", "gerente", "seguridad", "gerente_zona"];
+    const ROLE_ORDER = ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad", "gerente", "gerente_zona"];
     const roleMap = new Map<string, { role: string; employees: number; present: number }>();
     const empStoreMap = new Map<string, { total: number; present: number }>();
     for (const e of employees) {
