@@ -26,7 +26,7 @@ export const Route = createFileRoute("/")({
   component: MarcajePage,
 });
 
-type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "done";
+type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "newpin" | "done";
 type AttType = "entrada" | "salida";
 type AuthMethod = "pin" | "password" | "webauthn";
 type GeoState = { lat: number; lng: number; accuracy: number } | null;
@@ -37,6 +37,7 @@ type MarkInput = {
   storeCode: string;
   terminalPin: string;
   pin?: string;
+  newPin?: string;
   password?: string;
   webauthnResponse?: unknown;
   latitude?: number;
@@ -71,6 +72,9 @@ function MarcajePage() {
   const [overridePin, setOverridePin] = useState("");
   const [overrideMsg, setOverrideMsg] = useState("");
   const [pendingPayload, setPendingPayload] = useState<MarkInput | null>(null);
+  const [newPin, setNewPin] = useState("");
+  const [newPin2, setNewPin2] = useState("");
+  const [newPinMsg, setNewPinMsg] = useState("");
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -110,6 +114,9 @@ function MarcajePage() {
     setOverridePin("");
     setOverrideMsg("");
     setPendingPayload(null);
+    setNewPin("");
+    setNewPin2("");
+    setNewPinMsg("");
   };
 
   const submitCode = async () => {
@@ -201,6 +208,13 @@ function MarcajePage() {
     try {
       const res = await mark({ data: payload });
       if (!res.ok) {
+        // PIN restablecido: pedir nuevo PIN sin perder la selfie ya capturada.
+        if ("mustChangePin" in res && res.mustChangePin) {
+          setPendingPayload({ ...payload, newPin: undefined });
+          setNewPinMsg(res.error ?? "Crea un nuevo PIN para continuar.");
+          setStep("newpin");
+          return;
+        }
         const faceFail = !!res.error && res.error.includes("rostro no coincide");
         const supFail = !!res.error && res.error.includes("Supervisor");
         if (faceFail || supFail) {
@@ -261,6 +275,23 @@ function MarcajePage() {
       return;
     }
     await submit({ ...pendingPayload, supervisorCode: overrideCode, supervisorPin: overridePin });
+  };
+
+  const submitNewPin = async () => {
+    if (!pendingPayload) return;
+    if (newPin.length < 4) {
+      toast.error("El nuevo PIN debe tener al menos 4 dígitos");
+      return;
+    }
+    if (newPin === "1234") {
+      toast.error("Elige un PIN distinto de 1234");
+      return;
+    }
+    if (newPin !== newPin2) {
+      toast.error("Los PIN no coinciden");
+      return;
+    }
+    await submit({ ...pendingPayload, newPin });
   };
 
   if (!ready) {
@@ -555,6 +586,53 @@ function MarcajePage() {
                   onClick={submitOverride}
                 >
                   Autorizar marcaje
+                </Button>
+              </div>
+            </>
+          )}
+
+          {step === "newpin" && (
+            <>
+              <div className="text-center mb-4">
+                <div className="mx-auto h-14 w-14 rounded-2xl bg-amber-500/15 flex items-center justify-center mb-3">
+                  <KeyRound className="h-8 w-8 text-amber-600" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">Crea tu nuevo PIN</h2>
+                <p className="text-sm text-muted-foreground mt-1">{newPinMsg}</p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Por seguridad, define un PIN propio de 4 a 8 dígitos (distinto de 1234).
+                </p>
+              </div>
+              <div className="space-y-3">
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  autoFocus
+                  className="h-14 text-lg text-center font-mono tracking-[0.3em]"
+                  value={newPin}
+                  maxLength={8}
+                  placeholder="Nuevo PIN"
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ""))}
+                />
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  className="h-14 text-lg text-center font-mono tracking-[0.3em]"
+                  value={newPin2}
+                  maxLength={8}
+                  placeholder="Confirmar PIN"
+                  onChange={(e) => setNewPin2(e.target.value.replace(/\D/g, ""))}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitNewPin(); }}
+                />
+              </div>
+              <div className="flex gap-3 mt-6">
+                <Button variant="outline" className="flex-1 h-14" onClick={reset}>Cancelar</Button>
+                <Button
+                  className="flex-1 h-14 bg-primary text-primary-foreground hover:bg-primary/90"
+                  disabled={newPin.length < 4 || newPin2.length < 4}
+                  onClick={submitNewPin}
+                >
+                  Guardar y marcar
                 </Button>
               </div>
             </>

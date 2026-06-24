@@ -3,7 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
-import { verifyPin } from "./pin.server";
+import { verifyPin, hashPin } from "./pin.server";
 import { verifyPassword } from "./password.server";
 import { haversineMeters } from "./geo";
 import { validateSelfie } from "./selfie-validation.server";
@@ -40,6 +40,9 @@ const markInput = z.object({
   terminalPin: z.string().trim().min(4).max(12),
   // Auth method: exactly one of these must be provided
   pin: z.string().trim().min(4).max(8).optional(),
+  // Nuevo PIN cuando el colaborador entra con un PIN restablecido (1234) y debe
+  // cambiarlo en su primer marcaje.
+  newPin: z.string().trim().regex(/^\d{4,8}$/).optional(),
   password: z.string().min(1).max(72).optional(),
   webauthnResponse: z.any().optional(),
   // Optional client geolocation
@@ -96,7 +99,7 @@ export const markAttendance = createServerFn({ method: "POST" })
 
     const { data: employee, error: empErr } = await supabaseAdmin
       .from("employees")
-      .select("id, full_name, role, store_id, pin_hash, password_hash, active, failed_selfie_attempts, selfie_blocked_until, face_descriptor")
+      .select("id, full_name, role, store_id, pin_hash, password_hash, active, failed_selfie_attempts, selfie_blocked_until, face_descriptor, must_change_pin")
       .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
 
@@ -165,6 +168,26 @@ export const markAttendance = createServerFn({ method: "POST" })
         return { ok: false as const, error: e instanceof Error ? e.message : "Error verificando huella" };
       }
       authMethod = "webauthn";
+    }
+
+    // 2.5) Cambio de PIN obligatorio: tras un reseteo el colaborador entra con
+    // 1234 y debe definir un PIN propio antes de poder marcar. Solo aplica a la
+    // autenticación por PIN. El cambio se aplica al final, si el marcaje culmina.
+    if (authMethod === "pin" && employee.must_change_pin) {
+      if (!data.newPin) {
+        return {
+          ok: false as const,
+          mustChangePin: true as const,
+          error: "Tu PIN fue restablecido. Crea un nuevo PIN para continuar.",
+        };
+      }
+      if (data.newPin === "1234" || data.newPin === data.pin) {
+        return {
+          ok: false as const,
+          mustChangePin: true as const,
+          error: "El nuevo PIN no puede ser 1234. Elige un PIN distinto.",
+        };
+      }
     }
 
     // 3) AI selfie validation (Google Gemini, direct)
@@ -270,6 +293,13 @@ export const markAttendance = createServerFn({ method: "POST" })
         face_override_by: faceOverrideBy,
       });
     if (insErr) return { ok: false as const, error: "Error guardando marcaje" };
+
+    // Aplicar el cambio de PIN obligatorio recién ahora que el marcaje culminó.
+    if (authMethod === "pin" && employee.must_change_pin && data.newPin) {
+      await supabaseAdmin.from("employees")
+        .update({ pin_hash: hashPin(data.newPin), must_change_pin: false })
+        .eq("id", employee.id);
+    }
 
     // Reset failed counter on successful marcaje
     if ((employee.failed_selfie_attempts ?? 0) > 0 || employee.selfie_blocked_until) {

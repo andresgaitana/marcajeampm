@@ -8,6 +8,7 @@ import {
   createEmployee,
   updateEmployee,
   deleteEmployee,
+  resetEmployeePin,
   listEmployeeAssignments,
   setEmployeeAssignments,
   checkAdmin,
@@ -74,7 +75,7 @@ import {
 import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
-  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera,
+  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -299,6 +300,7 @@ function EmployeesPanel() {
   const createFn = useServerFn(createEmployee);
   const updateFn = useServerFn(updateEmployee);
   const deleteFn = useServerFn(deleteEmployee);
+  const resetPinFn = useServerFn(resetEmployeePin);
   const storesFn = useServerFn(listStores);
   const checkFn = useServerFn(checkAdmin);
   const qc = useQueryClient();
@@ -313,6 +315,16 @@ function EmployeesPanel() {
   // Un Gerente de Tienda "puro" (sin admin/ops/zona) tiene permisos limitados.
   const isOnlyStoreAdmin =
     !!access?.isStoreAdmin && !access?.isAdmin && !access?.isOperations && !access?.isZoneAdmin;
+  const isSuper = !!(access?.isAdmin || access?.isOperations);
+  const isZoneOnly = !!access?.isZoneAdmin && !isSuper;
+  // Quién puede restablecer el PIN de cada colaborador (refleja la regla del backend):
+  //  - Super admin/Ops: todos.  - GZ: todos menos otro GZ.  - GT: solo sus Agentes.
+  const canResetPin = (role: string) => {
+    if (isSuper) return true;
+    if (isZoneOnly) return role !== "gerente_zona";
+    if (isOnlyStoreAdmin) return ["cajero", "agente_mbk", "seguridad"].includes(role);
+    return false;
+  };
   const allowedRoles: EmployeeRole[] = isOnlyStoreAdmin
     ? ["cajero", "agente_mbk", "seguridad"]
     : ["cajero", "agente_mbk", "gerente", "gerente_zona", "seguridad"];
@@ -411,6 +423,17 @@ function EmployeesPanel() {
       qc.invalidateQueries({ queryKey: ["employees"] });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Error al eliminar");
+    }
+  };
+
+  const resetPin = async (id: string, name: string) => {
+    if (!confirm(`¿Restablecer el PIN de ${name} a 1234?\nDeberá crear un PIN nuevo en su próximo marcaje.`)) return;
+    try {
+      await resetPinFn({ data: { id } });
+      toast.success(`PIN restablecido a 1234. ${name} deberá cambiarlo al marcar.`);
+      qc.invalidateQueries({ queryKey: ["employees"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Error al restablecer el PIN");
     }
   };
 
@@ -578,14 +601,24 @@ function EmployeesPanel() {
                   })()}
                 </TableCell>
                 <TableCell>
-                  {e.active ? (
-                    <Badge className="bg-[oklch(0.65_0.16_155)] text-white hover:bg-[oklch(0.65_0.16_155)]">Activo</Badge>
-                  ) : (
-                    <Badge variant="secondary">Inactivo</Badge>
-                  )}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {e.active ? (
+                      <Badge className="bg-[oklch(0.65_0.16_155)] text-white hover:bg-[oklch(0.65_0.16_155)]">Activo</Badge>
+                    ) : (
+                      <Badge variant="secondary">Inactivo</Badge>
+                    )}
+                    {e.must_change_pin && (
+                      <Badge variant="outline" className="border-amber-500 text-amber-700">PIN 1234 · por cambiar</Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="text-right">
                   <FingerprintButton employeeId={e.id} employeeName={e.full_name} />
+                  {canResetPin(e.role) && (
+                    <Button variant="ghost" size="sm" title="Restablecer PIN a 1234" onClick={() => resetPin(e.id, e.full_name)}>
+                      <KeyRound className="h-4 w-4 text-amber-600" />
+                    </Button>
+                  )}
                   <Button variant="ghost" size="sm" onClick={() => { setEditing(e); setOpen(true); }}>
                     <Pencil className="h-4 w-4" />
                   </Button>

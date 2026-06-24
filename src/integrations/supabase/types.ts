@@ -167,6 +167,7 @@ export type Database = {
           failed_selfie_attempts: number
           full_name: string
           id: string
+          must_change_pin: boolean
           password_hash: string | null
           pin_hash: string
           role: Database["public"]["Enums"]["employee_role"]
@@ -185,6 +186,7 @@ export type Database = {
           failed_selfie_attempts?: number
           full_name: string
           id?: string
+          must_change_pin?: boolean
           password_hash?: string | null
           pin_hash: string
           role?: Database["public"]["Enums"]["employee_role"]
@@ -203,6 +205,7 @@ export type Database = {
           failed_selfie_attempts?: number
           full_name?: string
           id?: string
+          must_change_pin?: boolean
           password_hash?: string | null
           pin_hash?: string
           role?: Database["public"]["Enums"]["employee_role"]

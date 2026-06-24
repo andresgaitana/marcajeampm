@@ -94,7 +94,7 @@ export const listEmployees = createServerFn({ method: "GET" })
     const scope = await getScope(context.userId);
     let q = supabaseAdmin
       .from("employees")
-      .select("id, employee_code, full_name, role, store, store_id, active, username, created_at, stores(code, name)")
+      .select("id, employee_code, full_name, role, store, store_id, active, username, created_at, must_change_pin, stores(code, name)")
       .order("created_at", { ascending: false });
     if (scope.storeIds !== "all") q = q.in("store_id", scope.storeIds);
     const { data, error } = await q;
@@ -360,6 +360,40 @@ export const updateEmployee = createServerFn({ method: "POST" })
     const { error } = await supabaseAdmin.from("employees").update(patch).eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
+  });
+
+/**
+ * Restablece el PIN de marcaje de un colaborador a 1234 y lo marca para que
+ * deba cambiarlo en su primer marcaje (must_change_pin). Jerarquía:
+ *  - Gerente de Tienda: solo a sus Agentes (cajero / agente_mbk / seguridad).
+ *  - Gerente de Zona: a sus Gerentes de Tienda y Agentes de su zona (no a otro GZ).
+ *  - Super admin / Gerente de Operaciones: a cualquier nivel.
+ */
+export const resetEmployeePin = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({ id: z.string().uuid() }).parse(i))
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    const { data: emp } = await supabaseAdmin
+      .from("employees").select("store_id, role").eq("id", data.id).maybeSingle();
+    if (!emp) throw new Error("Colaborador no encontrado");
+    // El colaborador debe estar dentro del alcance de tiendas del usuario.
+    if (scope.storeIds !== "all" && !scope.storeIds.includes(emp.store_id))
+      throw new Error("No puedes restablecer el PIN de este colaborador");
+
+    const isSuper = scope.isAdmin || scope.isOperations;
+    const isZoneOnly = scope.isZoneAdmin && !isSuper;
+    const isStoreOnly = scope.isStoreAdmin && !isSuper && !scope.isZoneAdmin;
+    if (isStoreOnly && !["cajero", "agente_mbk", "seguridad"].includes(emp.role))
+      throw new Error("Como Gerente de Tienda solo puedes restablecer el PIN de tus Agentes (cajero, MBK, seguridad).");
+    if (isZoneOnly && emp.role === "gerente_zona")
+      throw new Error("No puedes restablecer el PIN de otro Gerente de Zona.");
+
+    const { error } = await supabaseAdmin.from("employees")
+      .update({ pin_hash: hashPin("1234"), must_change_pin: true })
+      .eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true as const };
   });
 
 export const deleteEmployee = createServerFn({ method: "POST" })
