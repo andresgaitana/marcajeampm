@@ -31,6 +31,13 @@ function managuaParts(iso: string): { date: string; hour: number } {
   return { date: local.toISOString().slice(0, 10), hour: local.getUTCHours() };
 }
 
+/** Extrae el nombre del guarda desde las notas ("Guarda tercerizado: NOMBRE (EMPRESA)"). */
+function guardNameFromNotes(notes: string | null | undefined): string | null {
+  if (!notes) return null;
+  const m = notes.match(/Guarda tercerizado:\s*([^(·]+?)\s*(?:\(|·|$)/);
+  return m ? m[1].trim() : null;
+}
+
 export const getDashboardMetrics = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) =>
@@ -508,7 +515,7 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
 
     const { data: rows } = await supabaseAdmin
       .from("attendance_records")
-      .select("created_at, employee:employees!employee_id(id, full_name, role)")
+      .select("created_at, notes, employee:employees!employee_id(id, full_name, role)")
       .eq("store_id", data.storeId)
       .eq("type", "entrada")
       .gte("created_at", fromUTC.toISOString())
@@ -557,7 +564,15 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
         ? (hour >= 6 && hour < 14 ? "AM" : "PM")
         : (hour >= 6 && hour < 18 ? "AM" : "PM");
       const key = `${area}_${shift}`;
-      buckets[key][di].set(emp.id as string, (emp.full_name as string) ?? "—");
+      // Para Seguridad Tercerizada (usuario compartido) agrupamos por NOMBRE del
+      // guarda capturado en el marcaje, no por el usuario; así se ven los distintos.
+      let identity = emp.id as string;
+      let display = (emp.full_name as string) ?? "—";
+      if (area === "TERC") {
+        const gn = guardNameFromNotes(rec.notes as string | null);
+        if (gn) { identity = `g:${gn.toLowerCase()}`; display = gn; }
+      }
+      buckets[key][di].set(identity, display);
     }
 
     const gridRows = rowDefs.map((r) => ({
