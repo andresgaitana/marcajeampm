@@ -189,10 +189,11 @@ function AdminDashboard() {
 
 function AttendancePanel() {
   const fetchFn = useServerFn(listAttendance);
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["attendance"],
     queryFn: () => fetchFn({ data: { limit: 200 } }),
     refetchInterval: 15_000,
+    retry: 1,
   });
 
   const rows = data ?? [];
@@ -248,7 +249,13 @@ function AttendancePanel() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
+            {isError ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-8 text-destructive">
+                  No se pudieron cargar los marcajes: {error instanceof Error ? error.message : "error desconocido"}
+                </TableCell>
+              </TableRow>
+            ) : isLoading ? (
               <TableRow>
                 <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                   Cargando…

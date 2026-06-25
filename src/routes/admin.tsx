@@ -12,11 +12,19 @@ export const Route = createFileRoute("/admin")({
   component: AdminLayout,
 });
 
+/** Primer nombre amigable a partir del metadata o el correo. */
+function friendlyName(fullName?: string, email?: string | null): string {
+  const raw = (fullName || (email ? email.split("@")[0] : "") || "").trim();
+  const first = raw.split(/[ ._-]/)[0] || raw;
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : "";
+}
+
 function AdminLayout() {
   const nav = useNavigate();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const check = useServerFn(checkAdmin);
   const [state, setState] = useState<"loading" | "ready" | "denied">("loading");
+  const [welcome, setWelcome] = useState<{ name: string; role: string } | null>(null);
 
   // Skip gating on the login page itself
   const isLogin = path === "/admin/login";
@@ -33,6 +41,18 @@ function AdminLayout() {
       try {
         const r = await check();
         if (!mounted) return;
+        const meta = (session.user.user_metadata ?? {}) as { full_name?: string };
+        const name = friendlyName(meta.full_name, session.user.email);
+        const role = r.isAdmin
+          ? "Administrador"
+          : r.isOperations
+            ? "Gerente de Operaciones"
+            : r.isZoneAdmin
+              ? "Gerente de Zona"
+              : r.isStoreAdmin
+                ? "Gerente de Tienda"
+                : "";
+        setWelcome({ name, role });
         setState(r.hasAccess ? "ready" : "denied");
       } catch {
         if (mounted) setState("denied");
@@ -87,7 +107,9 @@ function AdminLayout() {
             <img src={logoAmpm} alt="AM/PM Centroamérica" className="h-9 md:h-10 w-auto shrink-0" />
             <div className="border-l border-border pl-2 md:pl-3 min-w-0">
               <h1 className="text-sm md:text-base font-bold text-foreground truncate">Panel de Administración</h1>
-              <p className="text-xs text-muted-foreground truncate">Control de Asistencia</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {welcome ? `Bienvenido, ${welcome.name}${welcome.role ? ` · ${welcome.role}` : ""}` : "Control de Asistencia"}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-1 md:gap-2 shrink-0">
