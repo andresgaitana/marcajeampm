@@ -26,7 +26,7 @@ export const Route = createFileRoute("/")({
   component: MarcajePage,
 });
 
-type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "newpin" | "done";
+type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "newpin" | "guarda" | "done";
 type AttType = "entrada" | "salida";
 type AuthMethod = "pin" | "password" | "webauthn";
 type GeoState = { lat: number; lng: number; accuracy: number } | null;
@@ -46,6 +46,8 @@ type MarkInput = {
   faceDescriptor?: number[];
   supervisorCode?: string;
   supervisorPin?: string;
+  guardName?: string;
+  guardCompany?: string;
 };
 
 function MarcajePage() {
@@ -75,6 +77,9 @@ function MarcajePage() {
   const [newPin, setNewPin] = useState("");
   const [newPin2, setNewPin2] = useState("");
   const [newPinMsg, setNewPinMsg] = useState("");
+  const [isGuard, setIsGuard] = useState(false);
+  const [guardName, setGuardName] = useState("");
+  const [guardCompany, setGuardCompany] = useState("");
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -117,6 +122,9 @@ function MarcajePage() {
     setNewPin("");
     setNewPin2("");
     setNewPinMsg("");
+    setIsGuard(false);
+    setGuardName("");
+    setGuardCompany("");
   };
 
   const submitCode = async () => {
@@ -134,6 +142,7 @@ function MarcajePage() {
         return;
       }
       setEmployeeName(res.full_name);
+      setIsGuard(res.role === "seguridad_tercerizada");
       const m: AuthMethod[] = [];
       if (res.hasWebauthn) m.push("webauthn");
       if (res.hasPassword) m.push("password");
@@ -180,7 +189,7 @@ function MarcajePage() {
       }
       const assertion = await startAuthentication({ optionsJSON: res.options });
       setWebauthnResponse(assertion);
-      setStep("selfie");
+      setStep(isGuard ? "guarda" : "selfie");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Cancelado o no soportado");
       setStep(methods.length > 1 ? "method" : "code");
@@ -192,7 +201,7 @@ function MarcajePage() {
       toast.error("El PIN debe tener al menos 4 dígitos");
       return;
     }
-    setStep("selfie");
+    setStep(isGuard ? "guarda" : "selfie");
   };
 
   const submitPassword = () => {
@@ -200,7 +209,7 @@ function MarcajePage() {
       toast.error("La contraseña debe tener al menos 6 caracteres");
       return;
     }
-    setStep("selfie");
+    setStep(isGuard ? "guarda" : "selfie");
   };
 
   const submit = async (payload: MarkInput) => {
@@ -260,6 +269,10 @@ function MarcajePage() {
     if (method === "pin") payload.pin = pin;
     else if (method === "password") payload.password = password;
     else if (method === "webauthn") payload.webauthnResponse = webauthnResponse;
+    if (isGuard && guardName.trim()) {
+      payload.guardName = guardName.trim();
+      if (guardCompany.trim()) payload.guardCompany = guardCompany.trim();
+    }
     if (geo) {
       payload.latitude = geo.lat;
       payload.longitude = geo.lng;
@@ -533,13 +546,53 @@ function MarcajePage() {
             </div>
           )}
 
+          {step === "guarda" && (
+            <>
+              <div className="text-center mb-4">
+                <div className="mx-auto h-14 w-14 rounded-2xl bg-purple-500/15 flex items-center justify-center mb-3">
+                  <ShieldCheck className="h-8 w-8 text-purple-600" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">Datos del guarda</h2>
+                <p className="text-sm text-muted-foreground mt-1">Seguridad tercerizada — registra quién marca</p>
+              </div>
+              <div className="space-y-3">
+                <Input
+                  autoFocus
+                  className="h-14 text-lg"
+                  value={guardName}
+                  onChange={(e) => setGuardName(e.target.value)}
+                  placeholder="Nombre del guarda"
+                  maxLength={120}
+                />
+                <Input
+                  className="h-14 text-lg"
+                  value={guardCompany}
+                  onChange={(e) => setGuardCompany(e.target.value)}
+                  placeholder="Empresa de seguridad"
+                  maxLength={120}
+                  onKeyDown={(e) => { if (e.key === "Enter" && guardName.trim()) setStep("selfie"); }}
+                />
+              </div>
+              <div className="flex gap-3 mt-6">
+                <Button variant="outline" className="flex-1 h-14" onClick={reset}>Cancelar</Button>
+                <Button
+                  className="flex-1 h-14 bg-primary text-primary-foreground hover:bg-primary/90"
+                  disabled={!guardName.trim()}
+                  onClick={() => setStep("selfie")}
+                >
+                  Continuar
+                </Button>
+              </div>
+            </>
+          )}
+
           {step === "selfie" && (
             <>
               <div className="text-center mb-4">
                 <h2 className="text-xl font-bold text-foreground">Toma tu selfie</h2>
                 <p className="text-sm text-muted-foreground">Mira a la cámara y captura tu foto</p>
               </div>
-              <SelfieCapture onCapture={onSelfie} onCancel={() => setStep("pin")} />
+              <SelfieCapture onCapture={onSelfie} onCancel={() => setStep(isGuard ? "guarda" : "pin")} />
             </>
           )}
 

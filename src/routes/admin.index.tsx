@@ -354,6 +354,7 @@ function AttendancePanel() {
                     <TableCell>
                       <div className="font-medium text-foreground">{emp?.full_name}</div>
                       <div className="text-xs text-muted-foreground">{emp?.employee_code}</div>
+                      {r.notes && <div className="text-xs text-purple-700 mt-0.5">{r.notes}</div>}
                     </TableCell>
                     <TableCell className="capitalize text-muted-foreground">{emp?.role}</TableCell>
                     <TableCell className="text-muted-foreground">

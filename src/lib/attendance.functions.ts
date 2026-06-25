@@ -55,6 +55,9 @@ const markInput = z.object({
   // Override de supervisor (GT/GZ) cuando el reconocimiento facial falla.
   supervisorCode: z.string().trim().min(1).max(32).optional(),
   supervisorPin: z.string().trim().min(4).max(8).optional(),
+  // Datos del guarda para la cuenta compartida de Seguridad Tercerizada.
+  guardName: z.string().trim().max(120).optional(),
+  guardCompany: z.string().trim().max(120).optional(),
 });
 
 /**
@@ -281,6 +284,13 @@ export const markAttendance = createServerFn({ method: "POST" })
       .from("attendance-selfies")
       .getPublicUrl(path);
 
+    // Notas: datos del guarda (tercerizada), override de supervisor y/o notas libres.
+    const noteParts: string[] = [];
+    if (data.guardName) noteParts.push(`Guarda tercerizado: ${data.guardName}${data.guardCompany ? ` (${data.guardCompany})` : ""}`);
+    if (faceOverrideBy) noteParts.push("Marcaje autorizado por supervisor (override facial).");
+    if (data.notes) noteParts.push(data.notes);
+    const finalNotes = noteParts.length ? noteParts.join(" · ") : null;
+
     const { error: insErr } = await supabaseAdmin
       .from("attendance_records")
       .insert({
@@ -288,7 +298,7 @@ export const markAttendance = createServerFn({ method: "POST" })
         type: data.type,
         store_id: store.id,
         selfie_url: pub.publicUrl,
-        notes: faceOverrideBy ? `Marcaje autorizado por supervisor (override facial). ${data.notes ?? ""}`.trim() : (data.notes ?? null),
+        notes: finalNotes,
         latitude: data.latitude ?? null,
         longitude: data.longitude ?? null,
         location_accuracy_m: data.locationAccuracyM ?? null,
