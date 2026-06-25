@@ -421,7 +421,7 @@ export const exportAttendance = createServerFn({ method: "POST" })
     since.setDate(since.getDate() - data.days);
     let q = supabaseAdmin
       .from("attendance_records")
-      .select("created_at, type, location_valid, employee:employees(full_name, employee_code, role), store:stores(code, name)")
+      .select("created_at, type, location_valid, employee:employees!employee_id(full_name, employee_code, role), store:stores(code, name)")
       .gte("created_at", since.toISOString())
       .order("created_at", { ascending: false })
       .limit(20000);
@@ -489,7 +489,7 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
 
     const { data: rows } = await supabaseAdmin
       .from("attendance_records")
-      .select("created_at, employee:employees(id, full_name, role)")
+      .select("created_at, employee:employees!employee_id(id, full_name, role)")
       .eq("store_id", data.storeId)
       .eq("type", "entrada")
       .gte("created_at", fromUTC.toISOString())

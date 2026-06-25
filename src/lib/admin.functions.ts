@@ -541,7 +541,7 @@ export const listAttendance = createServerFn({ method: "GET" })
     const scope = await getScope(context.userId);
     let q = supabaseAdmin
       .from("attendance_records")
-      .select("id, type, selfie_url, notes, created_at, store_id, employee:employees(id, full_name, employee_code, role), store:stores(code, name)")
+      .select("id, type, selfie_url, notes, created_at, store_id, employee:employees!employee_id(id, full_name, employee_code, role), store:stores(code, name)")
       .order("created_at", { ascending: false })
       .limit(data.limit);
     if (data.storeId) q = q.eq("store_id", data.storeId);
