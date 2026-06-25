@@ -5,9 +5,9 @@
  */
 
 // Umbral de coincidencia. Con face_recognition_model, distancias < 0.6 suelen ser
-// la misma persona. 0.55 = balance (evita falsos negativos por luz/ángulo sin
-// abrir demasiado). Configurable por env para calibrar en campo.
-export const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD ?? "0.55");
+// la misma persona (0.6 es el valor estándar de la librería). Subido de 0.55 a
+// 0.6 para reducir falsos rechazos por luz/ángulo/compresión. Configurable por env.
+export const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD ?? "0.6");
 
 export function euclideanDistance(a: number[], b: number[]): number {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 128 || b.length !== 128) {

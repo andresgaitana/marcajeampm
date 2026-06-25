@@ -57,10 +57,10 @@ export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescri
     if (!video || !canvas) return;
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 480;
-    // Selfies livianas: reducir el lado mayor a 512 px y comprimir a JPEG ~0.62.
-    // Es suficiente para el reconocimiento facial (face-api) y reduce el peso de
-    // ~100 KB a ~30 KB → mucho más almacenamiento por mes.
-    const MAX = 512;
+    // Calidad suficiente para que el reconocimiento facial sea estable, con una
+    // compresión moderada (≈70-100 KB). Bajar más (p.ej. 512/0.62) degradaba el
+    // descriptor y causaba falsos rechazos.
+    const MAX = 640;
     const scale = Math.min(1, MAX / Math.max(vw, vh));
     canvas.width = Math.round(vw * scale);
     canvas.height = Math.round(vh * scale);
@@ -70,7 +70,7 @@ export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescri
     ctx.translate(canvas.width, 0);
     ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const url = canvas.toDataURL("image/jpeg", 0.62);
+    const url = canvas.toDataURL("image/jpeg", 0.78);
     setFaceError(null);
     setPreview(url);
   };
