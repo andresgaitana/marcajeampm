@@ -36,11 +36,22 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
   .inputValidator((i) =>
     z.object({
       storeId: z.string().uuid().optional(),
+      zoneId: z.string().uuid().optional(),
       days: z.number().int().min(1).max(90).default(7),
     }).parse(i ?? {}),
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
+    // Alcance efectivo: el del usuario, opcionalmente reducido por tienda o zona seleccionada.
+    let effective: string[] | "all" = scope.storeIds;
+    if (data.storeId) {
+      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+    } else if (data.zoneId) {
+      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+      let ids = (zs ?? []).map((s) => s.id as string);
+      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+      effective = ids;
+    }
     const since = new Date();
     since.setDate(since.getDate() - data.days);
     const startOfToday = new Date();
@@ -52,14 +63,13 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       .gte("created_at", since.toISOString())
       .order("created_at", { ascending: false })
       .limit(5000);
-    if (data.storeId) q = q.eq("store_id", data.storeId);
-    if (scope.storeIds !== "all") q = q.in("store_id", scope.storeIds);
+    if (effective !== "all") q = q.in("store_id", effective);
     const { data: rows } = await q;
     const records = (rows ?? []) as Rec[];
 
     // Stores in scope
     let storesQ = supabaseAdmin.from("stores").select("id, code, name, active, zone_id");
-    if (scope.storeIds !== "all") storesQ = storesQ.in("id", scope.storeIds);
+    if (effective !== "all") storesQ = storesQ.in("id", effective);
     const { data: storesData } = await storesQ;
     const stores = storesData ?? [];
 
@@ -135,7 +145,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       .from("employees")
       .select("id, full_name, employee_code, role, store_id")
       .eq("active", true);
-    if (scope.storeIds !== "all") empQ = empQ.in("store_id", scope.storeIds);
+    if (effective !== "all") empQ = empQ.in("store_id", effective);
     const { data: empData } = await empQ;
     const employees = empData ?? [];
 
@@ -413,10 +423,20 @@ export const exportAttendance = createServerFn({ method: "POST" })
     z.object({
       days: z.number().int().min(1).max(366).default(30),
       storeId: z.string().uuid().optional(),
+      zoneId: z.string().uuid().optional(),
     }).parse(i ?? {}),
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
+    let effective: string[] | "all" = scope.storeIds;
+    if (data.storeId) {
+      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+    } else if (data.zoneId) {
+      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+      let ids = (zs ?? []).map((s) => s.id as string);
+      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+      effective = ids;
+    }
     const since = new Date();
     since.setDate(since.getDate() - data.days);
     let q = supabaseAdmin
@@ -425,8 +445,7 @@ export const exportAttendance = createServerFn({ method: "POST" })
       .gte("created_at", since.toISOString())
       .order("created_at", { ascending: false })
       .limit(20000);
-    if (data.storeId) q = q.eq("store_id", data.storeId);
-    if (scope.storeIds !== "all") q = q.in("store_id", scope.storeIds);
+    if (effective !== "all") q = q.in("store_id", effective);
     const { data: rows, error } = await q;
     if (error) throw new Error(error.message);
     return (rows ?? []).map((r) => {

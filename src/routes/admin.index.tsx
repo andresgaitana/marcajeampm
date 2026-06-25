@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -113,6 +113,60 @@ const ADMIN_ROLE_LABELS: Record<string, string> = {
   gerente_tienda: "Gerente de Tienda",
 };
 
+/**
+ * Filtro reutilizable por Zona y Tienda. Deriva las opciones de listStores
+ * (ya limitado al alcance del usuario). Solo se muestra si hay más de una tienda
+ * (un GT con una sola tienda no lo necesita).
+ */
+function useStoreFilter() {
+  const storesFn = useServerFn(listStores);
+  const { data } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
+  const storeList = data ?? [];
+  const [zoneId, setZoneId] = useState("all");
+  const [storeId, setStoreId] = useState("all");
+
+  const zones = useMemo(() => {
+    const m = new Map<string, { id: string; label: string }>();
+    for (const s of storeList) {
+      const zRaw = (s as { zones?: { code?: string; name?: string } | { code?: string; name?: string }[] }).zones;
+      const z = Array.isArray(zRaw) ? zRaw[0] : zRaw;
+      if (s.zone_id && z) m.set(s.zone_id, { id: s.zone_id, label: `${z.code ?? ""} · ${z.name ?? ""}` });
+    }
+    return [...m.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [storeList]);
+
+  const storesForZone = zoneId === "all" ? storeList : storeList.filter((s) => s.zone_id === zoneId);
+
+  const matches = (sid?: string | null) => {
+    if (storeId !== "all") return sid === storeId;
+    if (zoneId !== "all") return storesForZone.some((s) => s.id === sid);
+    return true;
+  };
+
+  const bar = storeList.length > 1 ? (
+    <div className="flex flex-wrap items-center gap-2">
+      {zones.length > 1 && (
+        <Select value={zoneId} onValueChange={(v) => { setZoneId(v); setStoreId("all"); }}>
+          <SelectTrigger className="w-44"><SelectValue placeholder="Zona" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todas las zonas</SelectItem>
+            {zones.map((z) => <SelectItem key={z.id} value={z.id}>{z.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
+      <Select value={storeId} onValueChange={setStoreId}>
+        <SelectTrigger className="w-52"><SelectValue placeholder="Tienda" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">Todas las tiendas</SelectItem>
+          {storesForZone.map((s) => <SelectItem key={s.id} value={s.id}>{s.code} · {s.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>
+  ) : null;
+
+  return { zoneId, storeId, matches, bar };
+}
+
 function AdminDashboard() {
   const checkFn = useServerFn(checkAdmin);
   const { data: access } = useQuery({ queryKey: ["adminAccess"], queryFn: () => checkFn() });
@@ -196,7 +250,8 @@ function AttendancePanel() {
     retry: 1,
   });
 
-  const rows = data ?? [];
+  const filter = useStoreFilter();
+  const rows = (data ?? []).filter((r) => filter.matches(r.store_id));
 
   const exportCsv = () => {
     const header = ["Fecha", "Hora", "Colaborador", "Código", "Rol", "Tienda", "Tipo"];
@@ -226,14 +281,17 @@ function AttendancePanel() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
           <h2 className="text-xl font-bold text-foreground">Historial de marcajes</h2>
           <p className="text-sm text-muted-foreground">Últimos {rows.length} registros (se actualiza cada 15s)</p>
         </div>
-        <Button onClick={exportCsv} variant="outline" disabled={rows.length === 0}>
-          <Download className="h-4 w-4 mr-2" /> Exportar CSV
-        </Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {filter.bar}
+          <Button onClick={exportCsv} variant="outline" disabled={rows.length === 0}>
+            <Download className="h-4 w-4 mr-2" /> Exportar CSV
+          </Button>
+        </div>
       </div>
 
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
@@ -357,7 +415,8 @@ function EmployeesPanel() {
     ? ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada"]
     : ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "gerente", "gerente_zona"];
 
-  const employees = data ?? [];
+  const filter = useStoreFilter();
+  const employees = (data ?? []).filter((e) => filter.matches(e.store_id));
   const storeList = stores ?? [];
 
   const [open, setOpen] = useState(false);
@@ -467,11 +526,12 @@ function EmployeesPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
           <h2 className="text-xl font-bold text-foreground">Colaboradores</h2>
           <p className="text-sm text-muted-foreground">{employees.length} registrados</p>
         </div>
+        {filter.bar}
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setEditing(null); }}>
           <DialogTrigger asChild>
             <Button className="bg-accent text-accent-foreground hover:bg-accent/90">
@@ -862,6 +922,7 @@ function DashboardPanel() {
   const metricsFn = useServerFn(getDashboardMetrics);
   const summaryFn = useServerFn(getEmployeeSummary);
   const exportFn = useServerFn(exportAttendance);
+  const filter = useStoreFilter();
   const [days, setDays] = useState(7);
   const [exporting, setExporting] = useState(false);
   const [openEmployee, setOpenEmployee] = useState<{ id: string; name: string } | null>(null);
@@ -869,7 +930,10 @@ function DashboardPanel() {
   const doExport = async () => {
     setExporting(true);
     try {
-      const rows = await exportFn({ data: { days } });
+      const exportArgs: { days: number; storeId?: string; zoneId?: string } = { days };
+      if (filter.storeId !== "all") exportArgs.storeId = filter.storeId;
+      else if (filter.zoneId !== "all") exportArgs.zoneId = filter.zoneId;
+      const rows = await exportFn({ data: exportArgs });
       const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
       const header = ["Fecha", "Hora", "Codigo", "Nombre", "Rol", "Tienda", "Tipo", "UbicacionValida"];
       const lines = [header.join(",")].concat(
@@ -890,15 +954,19 @@ function DashboardPanel() {
     }
   };
 
+  const metricArgs: { days: number; storeId?: string; zoneId?: string } = { days };
+  if (filter.storeId !== "all") metricArgs.storeId = filter.storeId;
+  else if (filter.zoneId !== "all") metricArgs.zoneId = filter.zoneId;
   const { data: m, isLoading } = useQuery({
-    queryKey: ["dashboard", days],
-    queryFn: () => metricsFn({ data: { days } }),
+    queryKey: ["dashboard", days, filter.zoneId, filter.storeId],
+    queryFn: () => metricsFn({ data: metricArgs }),
     refetchInterval: 20_000,
   });
   const { data: summary } = useQuery({
     queryKey: ["empSummary", days],
     queryFn: () => summaryFn({ data: { days } }),
   });
+  const summaryRows = (summary ?? []).filter((e) => filter.matches(e.store_id));
 
   if (isLoading || !m) {
     return <div className="text-center py-12 text-muted-foreground">Cargando dashboard…</div>;
@@ -920,7 +988,8 @@ function DashboardPanel() {
             Hoy · histórico {days} días · se actualiza cada 20 s
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {filter.bar}
           <Button variant="outline" size="sm" onClick={doExport} disabled={exporting} title="Descargar los marcajes del periodo (Excel/CSV)">
             <Download className="h-4 w-4 mr-1" /> {exporting ? "Generando…" : "Descargar"}
           </Button>
@@ -1053,9 +1122,9 @@ function DashboardPanel() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {(summary ?? []).length === 0 ? (
+            {summaryRows.length === 0 ? (
               <TableRow><TableCell colSpan={6} className="text-center py-6 text-muted-foreground">Sin datos en el periodo.</TableCell></TableRow>
-            ) : (summary ?? []).map((e) => (
+            ) : summaryRows.map((e) => (
               <TableRow key={e.id} className="cursor-pointer hover:bg-secondary/40" onClick={() => setOpenEmployee({ id: e.id, name: e.full_name })}>
                 <TableCell>
                   <div className="font-medium text-foreground">{e.full_name}</div>
