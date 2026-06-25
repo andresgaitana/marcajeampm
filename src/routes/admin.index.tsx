@@ -477,7 +477,9 @@ function EmployeesPanel() {
         });
         toast.success("Colaborador actualizado");
       } else {
-        if (!form.face_descriptor) {
+        // La Seguridad Tercerizada usa un usuario compartido por tienda (rota el
+        // personal), por eso no exige foto de referencia.
+        if (!form.face_descriptor && form.role !== "seguridad_tercerizada") {
           toast.error("Toma la foto de referencia del colaborador (reconocimiento facial)");
           return;
         }
@@ -489,7 +491,7 @@ function EmployeesPanel() {
             store_id: form.store_id,
             pin: form.pin,
             active: form.active,
-            face_descriptor: form.face_descriptor,
+            ...(form.face_descriptor ? { face_descriptor: form.face_descriptor } : {}),
           },
         });
         toast.success("Colaborador creado");
@@ -630,7 +632,11 @@ function EmployeesPanel() {
                 ) : (
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground">
-                      {editing ? "Opcional: re-capturar para actualizar." : "Obligatoria: se usará para validar su identidad al marcar."}
+                      {editing
+                        ? "Opcional: re-capturar para actualizar."
+                        : form.role === "seguridad_tercerizada"
+                          ? "No requerida: la Seguridad Tercerizada usa un usuario compartido por tienda (rota el personal); la selfie de cada marcaje queda como evidencia."
+                          : "Obligatoria: se usará para validar su identidad al marcar."}
                     </span>
                     <Button type="button" variant="outline" size="sm" onClick={() => setShowRefCapture(true)}>
                       <Camera className="h-4 w-4 mr-1" /> Tomar foto
@@ -811,6 +817,10 @@ const SCHEDULE_ROW_STYLES: Record<string, { label: string; chip: string }> = {
   PROD_PM: { label: "text-blue-700", chip: "bg-blue-100 text-blue-900 border-blue-200" },
   MBK_AM: { label: "text-orange-700", chip: "bg-orange-100 text-orange-900 border-orange-200" },
   MBK_PM: { label: "text-sky-700", chip: "bg-sky-100 text-sky-900 border-sky-200" },
+  INT_AM: { label: "text-teal-700", chip: "bg-teal-100 text-teal-900 border-teal-200" },
+  INT_PM: { label: "text-emerald-700", chip: "bg-emerald-100 text-emerald-900 border-emerald-200" },
+  TERC_AM: { label: "text-purple-700", chip: "bg-purple-100 text-purple-900 border-purple-200" },
+  TERC_PM: { label: "text-fuchsia-700", chip: "bg-fuchsia-100 text-fuchsia-900 border-fuchsia-200" },
 };
 
 function WeeklySchedulePanel() {

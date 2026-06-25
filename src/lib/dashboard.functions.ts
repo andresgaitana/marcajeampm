@@ -532,6 +532,10 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
       { key: "PROD_PM", area: "Productos", shift: "PM", label: "Productos PM · 18:00-6:00" },
       { key: "MBK_AM", area: "MBK", shift: "AM", label: "MBK AM · 6:00-14:00" },
       { key: "MBK_PM", area: "MBK", shift: "PM", label: "MBK PM · 14:00-22:00" },
+      { key: "INT_AM", area: "Limpieza y Seg. Interna", shift: "AM", label: "Limpieza y Seg. Interna AM · 6:00-18:00" },
+      { key: "INT_PM", area: "Limpieza y Seg. Interna", shift: "PM", label: "Limpieza y Seg. Interna PM · 18:00-6:00" },
+      { key: "TERC_AM", area: "Seguridad Tercerizada", shift: "AM", label: "Seguridad Tercerizada AM · 6:00-18:00" },
+      { key: "TERC_PM", area: "Seguridad Tercerizada", shift: "PM", label: "Seguridad Tercerizada PM · 18:00-6:00" },
     ] as const;
     // Dedup por colaborador (id), no por nombre, para no colapsar homónimos.
     const buckets: Record<string, Array<Map<string, string>>> = {};
@@ -543,11 +547,16 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
       const { date, hour } = managuaParts(rec.created_at as string);
       const di = dayIndex.get(date);
       if (di === undefined) continue;
-      const isMbk = emp.role === "agente_mbk";
-      const shift: "AM" | "PM" = isMbk
+      const role = emp.role as string;
+      const area =
+        role === "agente_mbk" ? "MBK"
+          : role === "personal_limpieza" || role === "seguridad_interna" ? "INT"
+            : role === "seguridad_tercerizada" ? "TERC"
+              : "PROD";
+      const shift: "AM" | "PM" = area === "MBK"
         ? (hour >= 6 && hour < 14 ? "AM" : "PM")
         : (hour >= 6 && hour < 18 ? "AM" : "PM");
-      const key = `${isMbk ? "MBK" : "PROD"}_${shift}`;
+      const key = `${area}_${shift}`;
       buckets[key][di].set(emp.id as string, (emp.full_name as string) ?? "—");
     }
 
