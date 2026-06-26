@@ -588,3 +588,127 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
 
     return { weekStart: days[0].date, weekEnd: days[6].date, days, rows: gridRows };
   });
+
+/** Plan de dotación (agentes esperados por turno) según # de agentes y día de semana (0=Dom..6=Sáb). */
+function dotacionPlan(prodCount: number, mbkCount: number, dow: number) {
+  // Productos: 7+ => AM2/PM2; 6 => AM 2 (Lun/Vie/Sáb/Dom) o 1 (Mar/Mié/Jue), PM2; 5 => AM1/PM2.
+  let prodAm = 0, prodPm = 0;
+  if (prodCount >= 7) { prodAm = 2; prodPm = 2; }
+  else if (prodCount === 6) { prodAm = [0, 1, 5, 6].includes(dow) ? 2 : 1; prodPm = 2; }
+  else if (prodCount === 5) { prodAm = 1; prodPm = 2; }
+  // MBK: 4+ => AM 2 (excepto Mié=1), PM2; 3 => AM1/PM2; 2 => AM1/PM1; 1 => AM1/PM0.
+  let mbkAm = 0, mbkPm = 0;
+  if (mbkCount >= 4) { mbkAm = dow === 3 ? 1 : 2; mbkPm = 2; }
+  else if (mbkCount === 3) { mbkAm = 1; mbkPm = 2; }
+  else if (mbkCount === 2) { mbkAm = 1; mbkPm = 1; }
+  else if (mbkCount === 1) { mbkAm = 1; mbkPm = 0; }
+  return { prodAm, prodPm, mbkAm, mbkPm };
+}
+
+/**
+ * Reporte de Dotación (Real vs Plan) por tienda para una fecha (hoy por defecto,
+ * hora Nicaragua). Real = cajeros (Productos) y agente_mbk (MBK) que marcaron
+ * ENTRADA, por turno AM/PM. Plan = dotacionPlan(presupuesto, día). Respeta alcance.
+ */
+export const getStaffingReport = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      storeId: z.string().uuid().optional(),
+      zoneId: z.string().uuid().optional(),
+    }).parse(i ?? {}),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    let effective: string[] | "all" = scope.storeIds;
+    if (data.storeId) {
+      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+    } else if (data.zoneId) {
+      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+      let ids = (zs ?? []).map((s) => s.id as string);
+      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+      effective = ids;
+    }
+
+    const dateStr = data.date ?? new Date(Date.now() - NI_OFFSET_MS).toISOString().slice(0, 10);
+    const base = new Date(dateStr + "T00:00:00Z");
+    const dow = base.getUTCDay();
+    const fromMs = base.getTime() + NI_OFFSET_MS;
+    const fromISO = new Date(fromMs).toISOString();
+    const toISO = new Date(fromMs + 24 * 3600 * 1000).toISOString();
+
+    let sq = supabaseAdmin.from("stores").select("id, code, name, zone_id, zones(code, name)").eq("active", true).order("code");
+    if (effective !== "all") sq = sq.in("id", effective);
+    const { data: storesData } = await sq;
+    const stores = storesData ?? [];
+    const storeIds = stores.map((s) => s.id);
+
+    const { data: stf } = await supabaseAdmin.from("store_staffing").select("store_id, prod_agents, mbk_agents");
+    const staffMap = new Map((stf ?? []).map((x) => [x.store_id as string, x]));
+
+    type Buckets = { prodAm: Map<string, string>; prodPm: Map<string, string>; mbkAm: Map<string, string>; mbkPm: Map<string, string> };
+    const byStore = new Map<string, Buckets>();
+    if (storeIds.length) {
+      const { data: recs } = await supabaseAdmin
+        .from("attendance_records")
+        .select("created_at, store_id, employee:employees!employee_id(id, full_name, role)")
+        .eq("type", "entrada")
+        .gte("created_at", fromISO).lt("created_at", toISO)
+        .in("store_id", storeIds).limit(20000);
+      for (const rec of recs ?? []) {
+        const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
+        if (!emp) continue;
+        const role = emp.role as string;
+        if (role !== "cajero" && role !== "agente_mbk") continue;
+        const { hour } = managuaParts(rec.created_at as string);
+        const sid = rec.store_id as string;
+        if (!byStore.has(sid)) byStore.set(sid, { prodAm: new Map(), prodPm: new Map(), mbkAm: new Map(), mbkPm: new Map() });
+        const b = byStore.get(sid)!;
+        if (role === "cajero") (hour >= 6 && hour < 18 ? b.prodAm : b.prodPm).set(emp.id as string, emp.full_name as string);
+        else (hour >= 6 && hour < 14 ? b.mbkAm : b.mbkPm).set(emp.id as string, emp.full_name as string);
+      }
+    }
+
+    const rows = stores.map((s) => {
+      const st = staffMap.get(s.id);
+      const prodCount = st?.prod_agents ?? 0;
+      const mbkCount = st?.mbk_agents ?? 0;
+      const plan = dotacionPlan(prodCount, mbkCount, dow);
+      const b = byStore.get(s.id) ?? { prodAm: new Map(), prodPm: new Map(), mbkAm: new Map(), mbkPm: new Map() };
+      const z = Array.isArray(s.zones) ? s.zones[0] : s.zones;
+      const cell = (m: Map<string, string>, planN: number) => ({ real: m.size, plan: planN, names: [...m.values()] });
+      const prod = { am: cell(b.prodAm, plan.prodAm), pm: cell(b.prodPm, plan.prodPm) };
+      const mbk = { am: cell(b.mbkAm, plan.mbkAm), pm: cell(b.mbkPm, plan.mbkPm) };
+      const realTotal = prod.am.real + prod.pm.real + mbk.am.real + mbk.pm.real;
+      const planTotal = plan.prodAm + plan.prodPm + plan.mbkAm + plan.mbkPm;
+      return {
+        id: s.id, code: s.code, name: s.name, zone: z?.code ?? "",
+        prodAgents: prodCount, mbkAgents: mbkCount,
+        prod, mbk, realTotal, planTotal,
+        pct: planTotal > 0 ? Math.round((realTotal / planTotal) * 100) : 0,
+      };
+    });
+    return { date: dateStr, dow, rows };
+  });
+
+/** Editar el presupuesto de agentes de una tienda (solo Super admin). */
+export const setStoreStaffing = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid(),
+      prodAgents: z.number().int().min(0).max(50),
+      mbkAgents: z.number().int().min(0).max(50),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    if (!scope.isAdmin && !scope.isOperations) throw new Error("Solo Super admin puede editar el presupuesto de dotación");
+    const { error } = await supabaseAdmin.from("store_staffing").upsert(
+      { store_id: data.storeId, prod_agents: data.prodAgents, mbk_agents: data.mbkAgents, updated_at: new Date().toISOString() },
+      { onConflict: "store_id" },
+    );
+    if (error) throw new Error(error.message);
+    return { ok: true as const };
+  });

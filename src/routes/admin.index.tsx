@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance, getStaffingReport } from "@/lib/dashboard.functions";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -77,7 +77,7 @@ import {
 import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
-  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound,
+  Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -183,6 +183,10 @@ function AdminDashboard() {
           <CalendarIcon className="h-4 w-4 mr-2" />
           Horario
         </TabsTrigger>
+        <TabsTrigger value="staffing" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <ClipboardList className="h-4 w-4 mr-2" />
+          Dotación
+        </TabsTrigger>
         <TabsTrigger value="attendance" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <History className="h-4 w-4 mr-2" />
           Marcajes
@@ -215,6 +219,9 @@ function AdminDashboard() {
       </TabsContent>
       <TabsContent value="schedule">
         <WeeklySchedulePanel />
+      </TabsContent>
+      <TabsContent value="staffing">
+        <StaffingPanel />
       </TabsContent>
       <TabsContent value="attendance">
         <AttendancePanel />
@@ -796,6 +803,118 @@ function ZoneAssignmentsEditor({
         })}
         {stores.length === 0 && <p className="text-xs text-muted-foreground">No hay tiendas registradas.</p>}
       </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// DOTACIÓN: Real vs Plan
+// =====================================================================
+function todayNI(): string {
+  return new Date(Date.now() - 6 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function DotCell({ c }: { c: { real: number; plan: number; names: string[] } }) {
+  const color = c.plan === 0 ? "text-muted-foreground" : c.real >= c.plan ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700";
+  return (
+    <div className="min-w-0">
+      <span className={`font-semibold ${color}`}>{c.real}/{c.plan}</span>
+      {c.names.length > 0 && (
+        <div className="text-xs text-muted-foreground truncate max-w-[160px]" title={c.names.join(", ")}>{c.names.join(", ")}</div>
+      )}
+    </div>
+  );
+}
+
+function StaffingPanel() {
+  const reportFn = useServerFn(getStaffingReport);
+  const filter = useStoreFilter();
+  const [date, setDate] = useState(todayNI());
+
+  const args: { date: string; storeId?: string; zoneId?: string } = { date };
+  if (filter.storeId !== "all") args.storeId = filter.storeId;
+  else if (filter.zoneId !== "all") args.zoneId = filter.zoneId;
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["staffing", date, filter.zoneId, filter.storeId],
+    queryFn: () => reportFn({ data: args }),
+  });
+  const rows = data?.rows ?? [];
+
+  const exportCsv = () => {
+    const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const cellTxt = (c: { real: number; plan: number; names: string[] }) =>
+      `${c.real}/${c.plan}${c.names.length ? " — " + c.names.join("; ") : ""}`;
+    const header = ["Tienda", "Nombre", "Productos AM", "Productos PM", "MBK AM", "MBK PM", "Real", "Plan", "%"];
+    const lines = [header.join(",")].concat(
+      rows.map((r) => [
+        r.code, esc(r.name),
+        esc(cellTxt(r.prod.am)), esc(cellTxt(r.prod.pm)), esc(cellTxt(r.mbk.am)), esc(cellTxt(r.mbk.pm)),
+        String(r.realTotal), String(r.planTotal), `${r.pct}%`,
+      ].join(",")),
+    );
+    const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `dotacion_${date}.csv`; a.click(); URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-foreground">Dotación: Real vs Plan</h2>
+          <p className="text-sm text-muted-foreground">
+            Agentes que marcaron entrada vs el plan. Útil después de las 6:59am para validar el turno AM.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {filter.bar}
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value || todayNI())} className="w-40" />
+          <Button variant="outline" size="sm" onClick={exportCsv} disabled={rows.length === 0}>
+            <Download className="h-4 w-4 mr-1" /> Exportar Excel
+          </Button>
+        </div>
+      </div>
+      <div className="bg-card rounded-2xl border border-border overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-secondary/50">
+              <TableHead>Tienda</TableHead>
+              <TableHead>Productos AM</TableHead>
+              <TableHead>Productos PM</TableHead>
+              <TableHead>MBK AM</TableHead>
+              <TableHead>MBK PM</TableHead>
+              <TableHead className="text-right">Real</TableHead>
+              <TableHead className="text-right">Plan</TableHead>
+              <TableHead className="text-right">%</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isError ? (
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-destructive">{error instanceof Error ? error.message : "Error"}</TableCell></TableRow>
+            ) : isLoading ? (
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Sin tiendas en alcance.</TableCell></TableRow>
+            ) : rows.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell><span className="font-mono text-foreground">{r.code}</span> <span className="text-muted-foreground text-xs">{r.name}</span></TableCell>
+                <TableCell><DotCell c={r.prod.am} /></TableCell>
+                <TableCell><DotCell c={r.prod.pm} /></TableCell>
+                <TableCell><DotCell c={r.mbk.am} /></TableCell>
+                <TableCell><DotCell c={r.mbk.pm} /></TableCell>
+                <TableCell className="text-right font-medium">{r.realTotal}</TableCell>
+                <TableCell className="text-right text-muted-foreground">{r.planTotal}</TableCell>
+                <TableCell className={`text-right font-semibold ${r.pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{r.pct}%</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Productos = cajeros; MBK = Agente MBK. <strong>Real</strong> = quienes marcaron entrada en cada turno; <strong>Plan</strong> = meta según el presupuesto de la tienda y el día. Verde = cumple, ámbar = falta. Botón <strong>Exportar Excel</strong> para descargar como tu plantilla.
+      </p>
     </div>
   );
 }

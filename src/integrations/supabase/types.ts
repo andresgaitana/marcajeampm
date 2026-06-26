@@ -254,6 +254,35 @@ export type Database = {
           },
         ]
       }
+      store_staffing: {
+        Row: {
+          mbk_agents: number
+          prod_agents: number
+          store_id: string
+          updated_at: string
+        }
+        Insert: {
+          mbk_agents?: number
+          prod_agents?: number
+          store_id: string
+          updated_at?: string
+        }
+        Update: {
+          mbk_agents?: number
+          prod_agents?: number
+          store_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_staffing_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: true
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       stores: {
         Row: {
           active: boolean
