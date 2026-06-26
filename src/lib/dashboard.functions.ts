@@ -560,9 +560,12 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
           : role === "personal_limpieza" || role === "seguridad_interna" ? "INT"
             : role === "seguridad_tercerizada" ? "TERC"
               : "PROD";
+      // Clasificación por hora de ENTRADA con tolerancia de ~1h de llegada temprana:
+      // Productos AM (Día) = 5:00-17:00, PM (Noche) = resto.
+      // MBK AM = 5:00-13:00 (el turno de tarde entra ~13:30-14:00 → PM), PM = resto.
       const shift: "AM" | "PM" = area === "MBK"
-        ? (hour >= 6 && hour < 14 ? "AM" : "PM")
-        : (hour >= 6 && hour < 18 ? "AM" : "PM");
+        ? (hour >= 5 && hour < 13 ? "AM" : "PM")
+        : (hour >= 5 && hour < 17 ? "AM" : "PM");
       const key = `${area}_${shift}`;
       // Para Seguridad Tercerizada (usuario compartido) agrupamos por NOMBRE del
       // guarda capturado en el marcaje, no por el usuario; así se ven los distintos.
@@ -665,8 +668,10 @@ export const getStaffingReport = createServerFn({ method: "POST" })
         const sid = rec.store_id as string;
         if (!byStore.has(sid)) byStore.set(sid, { prodAm: new Map(), prodPm: new Map(), mbkAm: new Map(), mbkPm: new Map() });
         const b = byStore.get(sid)!;
-        if (role === "cajero") (hour >= 6 && hour < 18 ? b.prodAm : b.prodPm).set(emp.id as string, emp.full_name as string);
-        else (hour >= 6 && hour < 14 ? b.mbkAm : b.mbkPm).set(emp.id as string, emp.full_name as string);
+        // Mismas bandas que el Horario (tolerancia de llegada temprana):
+        // Productos AM 5:00-17:00; MBK AM 5:00-13:00 (la tarde entra ~13:30 → PM).
+        if (role === "cajero") (hour >= 5 && hour < 17 ? b.prodAm : b.prodPm).set(emp.id as string, emp.full_name as string);
+        else (hour >= 5 && hour < 13 ? b.mbkAm : b.mbkPm).set(emp.id as string, emp.full_name as string);
       }
     }
 
