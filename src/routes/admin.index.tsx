@@ -830,6 +830,7 @@ function StaffingPanel() {
   const reportFn = useServerFn(getStaffingReport);
   const filter = useStoreFilter();
   const [date, setDate] = useState(todayNI());
+  const [shift, setShift] = useState<"am" | "pm">("am");
 
   const args: { date: string; storeId?: string; zoneId?: string } = { date };
   if (filter.storeId !== "all") args.storeId = filter.storeId;
@@ -845,18 +846,20 @@ function StaffingPanel() {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
     const cellTxt = (c: { real: number; plan: number; names: string[] }) =>
       `${c.real}/${c.plan}${c.names.length ? " — " + c.names.join("; ") : ""}`;
-    const header = ["Tienda", "Nombre", "Productos AM", "Productos PM", "MBK AM", "MBK PM", "Real", "Plan", "%"];
+    const lbl = shift === "am" ? "AM" : "PM";
+    const header = ["Tienda", "Nombre", `Productos ${lbl}`, `MBK ${lbl}`, "Real", "Plan", "%"];
     const lines = [header.join(",")].concat(
-      rows.map((r) => [
-        r.code, esc(r.name),
-        esc(cellTxt(r.prod.am)), esc(cellTxt(r.prod.pm)), esc(cellTxt(r.mbk.am)), esc(cellTxt(r.mbk.pm)),
-        String(r.realTotal), String(r.planTotal), `${r.pct}%`,
-      ].join(",")),
+      rows.map((r) => {
+        const p = shift === "am" ? r.prod.am : r.prod.pm;
+        const m = shift === "am" ? r.mbk.am : r.mbk.pm;
+        const real = p.real + m.real, plan = p.plan + m.plan;
+        return [r.code, esc(r.name), esc(cellTxt(p)), esc(cellTxt(m)), String(real), String(plan), plan ? `${Math.round((real / plan) * 100)}%` : "—"].join(",");
+      }),
     );
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `dotacion_${date}.csv`; a.click(); URL.revokeObjectURL(url);
+    a.href = url; a.download = `dotacion_${shift}_${date}.csv`; a.click(); URL.revokeObjectURL(url);
   };
 
   return (
@@ -876,44 +879,57 @@ function StaffingPanel() {
           </Button>
         </div>
       </div>
-      <div className="bg-card rounded-2xl border border-border overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-secondary/50">
-              <TableHead>Tienda</TableHead>
-              <TableHead>Productos AM</TableHead>
-              <TableHead>Productos PM</TableHead>
-              <TableHead>MBK AM</TableHead>
-              <TableHead>MBK PM</TableHead>
-              <TableHead className="text-right">Real</TableHead>
-              <TableHead className="text-right">Plan</TableHead>
-              <TableHead className="text-right">%</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isError ? (
-              <TableRow><TableCell colSpan={8} className="text-center py-8 text-destructive">{error instanceof Error ? error.message : "Error"}</TableCell></TableRow>
-            ) : isLoading ? (
-              <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
-            ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Sin tiendas en alcance.</TableCell></TableRow>
-            ) : rows.map((r) => (
-              <TableRow key={r.id}>
-                <TableCell><span className="font-mono text-foreground">{r.code}</span> <span className="text-muted-foreground text-xs">{r.name}</span></TableCell>
-                <TableCell><DotCell c={r.prod.am} /></TableCell>
-                <TableCell><DotCell c={r.prod.pm} /></TableCell>
-                <TableCell><DotCell c={r.mbk.am} /></TableCell>
-                <TableCell><DotCell c={r.mbk.pm} /></TableCell>
-                <TableCell className="text-right font-medium">{r.realTotal}</TableCell>
-                <TableCell className="text-right text-muted-foreground">{r.planTotal}</TableCell>
-                <TableCell className={`text-right font-semibold ${r.pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{r.pct}%</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      <Tabs value={shift} onValueChange={(v) => setShift(v as "am" | "pm")}>
+        <TabsList className="bg-secondary border border-border">
+          <TabsTrigger value="am" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Corte AM</TabsTrigger>
+          <TabsTrigger value="pm" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Corte PM</TabsTrigger>
+        </TabsList>
+        {(["am", "pm"] as const).map((s) => (
+          <TabsContent key={s} value={s} className="mt-3">
+            <div className="bg-card rounded-2xl border border-border overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-secondary/50">
+                    <TableHead>Tienda</TableHead>
+                    <TableHead>Productos {s === "am" ? "AM" : "PM"}</TableHead>
+                    <TableHead>MBK {s === "am" ? "AM" : "PM"}</TableHead>
+                    <TableHead className="text-right">Real</TableHead>
+                    <TableHead className="text-right">Plan</TableHead>
+                    <TableHead className="text-right">%</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isError ? (
+                    <TableRow><TableCell colSpan={6} className="text-center py-8 text-destructive">{error instanceof Error ? error.message : "Error"}</TableCell></TableRow>
+                  ) : isLoading ? (
+                    <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+                  ) : rows.length === 0 ? (
+                    <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Sin tiendas en alcance.</TableCell></TableRow>
+                  ) : rows.map((r) => {
+                    const p = s === "am" ? r.prod.am : r.prod.pm;
+                    const m = s === "am" ? r.mbk.am : r.mbk.pm;
+                    const real = p.real + m.real;
+                    const plan = p.plan + m.plan;
+                    const pct = plan ? Math.round((real / plan) * 100) : 0;
+                    return (
+                      <TableRow key={r.id}>
+                        <TableCell><span className="font-mono text-foreground">{r.code}</span> <span className="text-muted-foreground text-xs">{r.name}</span></TableCell>
+                        <TableCell><DotCell c={p} /></TableCell>
+                        <TableCell><DotCell c={m} /></TableCell>
+                        <TableCell className="text-right font-medium">{real}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{plan}</TableCell>
+                        <TableCell className={`text-right font-semibold ${pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{plan ? pct + "%" : "—"}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </TabsContent>
+        ))}
+      </Tabs>
       <p className="text-xs text-muted-foreground">
-        Productos = cajeros; MBK = Agente MBK. <strong>Real</strong> = quienes marcaron entrada en cada turno; <strong>Plan</strong> = meta según el presupuesto de la tienda y el día. Verde = cumple, ámbar = falta. Botón <strong>Exportar Excel</strong> para descargar como tu plantilla.
+        Productos = cajeros; MBK = Agente MBK. <strong>Real</strong> = quienes marcaron entrada en ese corte; <strong>Plan</strong> = meta según el presupuesto y el día. Verde = cumple, ámbar = falta. <strong>Exportar Excel</strong> baja el corte seleccionado.
       </p>
     </div>
   );
