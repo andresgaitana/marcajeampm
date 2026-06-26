@@ -55,11 +55,20 @@ export async function validateSelfie(dataUrl: string): Promise<{
   ok: true;
   verdict: SelfieVerdict;
 } | { ok: false; error: string; verdict?: SelfieVerdict }> {
+  // "Fail-open" ante problemas de SERVICIO (saturación/caída/red/llave): NO se
+  // bloquea el marcaje (la selfie igual se guarda y el reconocimiento facial sigue
+  // aplicando). Solo se bloquea cuando Gemini SÍ respondió y vio un problema real.
+  const skipVerdict: SelfieVerdict = {
+    is_person: true, face_count: 1, is_blank: false, is_screen: false,
+    is_photo_of_photo: false, lighting_ok: true, confidence: 0,
+    reason: "Validación omitida (servicio no disponible)",
+  };
+  const SKIP = { ok: true as const, verdict: skipVerdict };
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    // Fail closed if AI is not configured — block the marcaje with a clear message.
-    console.warn("[selfie-validation] GEMINI_API_KEY missing, cannot validate");
-    return { ok: false, error: "Validación con IA no configurada. Contacta al administrador." };
+    console.warn("[selfie-validation] GEMINI_API_KEY missing — fail-open");
+    return SKIP;
   }
 
   const image = parseDataUrl(dataUrl);
@@ -93,24 +102,18 @@ export async function validateSelfie(dataUrl: string): Promise<{
         },
       }),
     });
-    if (res.status === 429) return { ok: false, error: "Servicio de validación saturado. Intenta de nuevo en unos segundos." };
-    if (res.status === 401 || res.status === 403) {
-      const txt = await res.text().catch(() => "");
-      console.error("[selfie-validation] gemini auth error", res.status, txt);
-      return { ok: false, error: "Validación con IA no configurada. Contacta al administrador." };
-    }
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      console.error("[selfie-validation] gemini error", res.status, txt);
-      return { ok: false, error: "No se pudo validar la selfie. Intenta de nuevo." };
+      console.warn(`[selfie-validation] gemini ${res.status} — fail-open`, txt.slice(0, 200));
+      return SKIP; // 429 saturado, 401/403 llave, 5xx, etc. → no bloquear el marcaje
     }
     const json = (await res.json()) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     };
     raw = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   } catch (e) {
-    console.error("[selfie-validation] fetch failed", e);
-    return { ok: false, error: "No se pudo validar la selfie. Intenta de nuevo." };
+    console.warn("[selfie-validation] fetch failed — fail-open", e);
+    return SKIP;
   }
 
   let parsed: unknown;
@@ -119,14 +122,14 @@ export async function validateSelfie(dataUrl: string): Promise<{
     const cleaned = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
     parsed = JSON.parse(cleaned);
   } catch {
-    console.error("[selfie-validation] non-JSON output", raw);
-    return { ok: false, error: "Respuesta de validación inválida. Intenta de nuevo." };
+    console.warn("[selfie-validation] non-JSON output — fail-open", raw.slice(0, 200));
+    return SKIP;
   }
 
   const result = verdictSchema.safeParse(parsed);
   if (!result.success) {
-    console.error("[selfie-validation] schema mismatch", result.error.flatten());
-    return { ok: false, error: "Respuesta de validación inválida. Intenta de nuevo." };
+    console.warn("[selfie-validation] schema mismatch — fail-open", result.error.flatten());
+    return SKIP;
   }
   const v = result.data;
   console.log("[selfie-validation] verdict", JSON.stringify(v));
