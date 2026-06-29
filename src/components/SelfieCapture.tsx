@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { Camera, RotateCcw, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { Camera, RotateCcw, Loader2, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { computeDescriptorFromDataUrl, loadFaceModels } from "@/lib/face-api";
+import {
+  computeDescriptorFromDataUrl,
+  loadFaceModels,
+  runLivenessCheck,
+  type LivenessHandle,
+} from "@/lib/face-api";
 
 interface Props {
   /** Recibe la foto (data URL) y el descriptor facial 128-d (o null si no se pudo calcular). */
@@ -11,47 +16,36 @@ interface Props {
   confirmLabel?: string;
   /** Si true (enrolamiento), exige detectar un rostro antes de continuar. */
   requireDescriptor?: boolean;
+  /** Si true (marcaje), exige una prueba de vida (parpadeo) antes de tomar la selfie. */
+  requireLiveness?: boolean;
 }
 
-export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescriptor }: Props) {
+// "scanning" = corriendo la prueba de vida; "manual" = captura manual (enrolamiento,
+// o fallback si el parpadeo falla / no carga el motor).
+type LiveState = "scanning" | "manual";
+
+export function SelfieCapture({
+  onCapture,
+  onCancel,
+  confirmLabel,
+  requireDescriptor,
+  requireLiveness,
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const livenessHandle = useRef<LivenessHandle>({ cancel: () => {} });
+  const scanningRef = useRef(false);
+  const mountedRef = useRef(true);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [computing, setComputing] = useState(false);
   const [faceError, setFaceError] = useState<string | null>(null);
+  const [live, setLive] = useState<LiveState>(requireLiveness ? "scanning" : "manual");
+  const [liveMsg, setLiveMsg] = useState<string | null>(null);
+  const [faceSeen, setFaceSeen] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    // Precargar los modelos de reconocimiento facial (CDN) mientras el usuario se acomoda.
-    loadFaceModels();
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false })
-      .then((s) => {
-        if (!active) {
-          s.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        setStream(s);
-        if (videoRef.current) {
-          videoRef.current.srcObject = s;
-          videoRef.current.play().catch(() => {});
-        }
-      })
-      .catch(() => setError("No se pudo acceder a la cámara. Verifica los permisos."));
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stream?.getTracks().forEach((t) => t.stop());
-    };
-  }, [stream]);
-
-  const snap = () => {
+  const snap = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
@@ -73,7 +67,95 @@ export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescri
     const url = canvas.toDataURL("image/jpeg", 0.78);
     setFaceError(null);
     setPreview(url);
-  };
+  }, []);
+
+  // Abrir la cámara (reutilizable: el botón "Reintentar cámara" la vuelve a invocar).
+  const openCamera = useCallback(() => {
+    setError(null);
+    // Precargar los modelos de reconocimiento facial (CDN) mientras el usuario se acomoda.
+    loadFaceModels();
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false })
+      .then((s) => {
+        if (!mountedRef.current) {
+          s.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        setStream(s);
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+          videoRef.current.play().catch(() => {});
+        }
+      })
+      .catch(() => {
+        if (mountedRef.current)
+          setError(
+            "No se pudo acceder a la cámara. Toca el candado en la barra de direcciones, permite la cámara y reintenta.",
+          );
+      });
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    openCamera();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [openCamera]);
+
+  useEffect(() => {
+    return () => {
+      stream?.getTracks().forEach((t) => t.stop());
+    };
+  }, [stream]);
+
+  // Prueba de vida (parpadeo). Solo en marcaje. Al detectar el parpadeo, toma la selfie
+  // con los ojos ya abiertos. Si no detecta (timeout/sin rostro) o el motor no carga,
+  // cae a captura manual (el servidor sigue validando la selfie con Gemini).
+  const startLiveness = useCallback(async () => {
+    if (!requireLiveness) return;
+    const video = videoRef.current;
+    if (!video || scanningRef.current) return;
+    scanningRef.current = true;
+    setLive("scanning");
+    setLiveMsg(null);
+    setFaceSeen(false);
+    try {
+      const res = await runLivenessCheck(video, {
+        blinksRequired: 1,
+        timeoutMs: 9000,
+        handle: livenessHandle.current,
+        onProgress: (p) => setFaceSeen(p.faceDetected),
+      });
+      if (res.ok) {
+        snap(); // captura con los ojos ya abiertos tras el parpadeo
+      } else if (res.reason === "cancelled") {
+        /* desmontado o reinicio: no hacer nada */
+      } else if (res.reason === "unavailable") {
+        setLive("manual");
+        setLiveMsg("No se pudo iniciar la prueba de vida. Toma la selfie.");
+      } else if (res.reason === "no-face") {
+        setLive("manual");
+        setLiveMsg("No detectamos tu rostro. Acércate a la cámara e inténtalo de nuevo.");
+      } else {
+        setLive("manual");
+        setLiveMsg("No detectamos un parpadeo. Inténtalo de nuevo o toma la selfie.");
+      }
+    } finally {
+      scanningRef.current = false;
+    }
+  }, [requireLiveness, snap]);
+
+  // Arrancar el parpadeo cuando hay cámara y no hay foto tomada. Al retomar (preview→null)
+  // el efecto se re-ejecuta y vuelve a pedir el parpadeo. Cancela el loop al desmontar.
+  useEffect(() => {
+    if (requireLiveness && stream && !preview) {
+      startLiveness();
+    }
+    return () => {
+      livenessHandle.current.cancel();
+    };
+  }, [requireLiveness, stream, preview, startLiveness]);
 
   const retake = () => {
     setPreview(null);
@@ -102,6 +184,8 @@ export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescri
     onCapture(preview, descriptor);
   };
 
+  const scanning = requireLiveness && live === "scanning" && !preview && !error;
+
   return (
     <div className="flex flex-col items-center gap-4 w-full">
       <div className="relative w-full max-w-md aspect-[4/3] overflow-hidden rounded-2xl border-2 border-border bg-black shadow-[var(--shadow-soft)]">
@@ -121,15 +205,54 @@ export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescri
           />
         )}
         <div className="absolute inset-0 pointer-events-none rounded-2xl ring-1 ring-inset ring-white/10" />
+
+        {/* Overlay de la prueba de vida */}
+        {scanning && (
+          <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/70 to-transparent">
+            <div className="flex items-center justify-center gap-2 text-white text-sm font-medium">
+              {faceSeen ? (
+                <>
+                  <Eye className="h-5 w-5 animate-pulse" />
+                  Parpadea para confirmar que eres tú
+                </>
+              ) : (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  Acerca tu rostro a la cámara…
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
       <canvas ref={canvasRef} className="hidden" />
 
+      {liveMsg && !preview && (
+        <p className="text-sm text-muted-foreground text-center -mt-1">{liveMsg}</p>
+      )}
       {faceError && (
         <p className="text-sm text-destructive text-center -mt-1">{faceError}</p>
       )}
 
       <div className="flex gap-3 w-full max-w-md">
-        {preview ? (
+        {error ? (
+          // Cámara denegada/no disponible: estado claro + reintentar (no overlay de escaneo).
+          <>
+            {onCancel && (
+              <Button type="button" variant="outline" className="h-14 px-6" onClick={onCancel}>
+                Cancelar
+              </Button>
+            )}
+            <Button
+              type="button"
+              className="flex-1 h-14 bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={openCamera}
+            >
+              <Camera className="mr-2 h-5 w-5" />
+              Reintentar cámara
+            </Button>
+          </>
+        ) : preview ? (
           <>
             <Button type="button" variant="outline" className="flex-1 h-14" onClick={retake} disabled={computing}>
               <RotateCcw className="mr-2 h-5 w-5" />
@@ -151,11 +274,24 @@ export function SelfieCapture({ onCapture, onCancel, confirmLabel, requireDescri
               )}
             </Button>
           </>
+        ) : scanning ? (
+          // Durante el parpadeo: solo permitir cancelar (la captura es automática).
+          onCancel && (
+            <Button type="button" variant="outline" className="flex-1 h-14" onClick={onCancel}>
+              Cancelar
+            </Button>
+          )
         ) : (
           <>
             {onCancel && (
               <Button type="button" variant="outline" className="h-14 px-6" onClick={onCancel}>
                 Cancelar
+              </Button>
+            )}
+            {requireLiveness && (
+              <Button type="button" variant="outline" className="h-14 px-4" onClick={startLiveness}>
+                <Eye className="mr-2 h-5 w-5" />
+                Reintentar
               </Button>
             )}
             <Button

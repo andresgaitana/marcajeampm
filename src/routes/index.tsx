@@ -590,9 +590,9 @@ function MarcajePage() {
             <>
               <div className="text-center mb-4">
                 <h2 className="text-xl font-bold text-foreground">Toma tu selfie</h2>
-                <p className="text-sm text-muted-foreground">Mira a la cámara y captura tu foto</p>
+                <p className="text-sm text-muted-foreground">Mira a la cámara y parpadea cuando se te indique</p>
               </div>
-              <SelfieCapture onCapture={onSelfie} onCancel={() => setStep(isGuard ? "guarda" : "pin")} />
+              <SelfieCapture requireLiveness onCapture={onSelfie} onCancel={() => setStep(isGuard ? "guarda" : "pin")} />
             </>
           )}
 
