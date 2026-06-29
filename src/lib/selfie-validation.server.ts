@@ -51,6 +51,40 @@ function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
   return { mimeType: match[1], data: match[2] };
 }
 
+type SelfieValidation =
+  | { ok: true; verdict: SelfieVerdict }
+  | { ok: false; error: string; verdict?: SelfieVerdict };
+
+/**
+ * Delega la validación a la Edge Function de Supabase (Vertex AI / service account).
+ * Se activa con SELFIE_VALIDATOR=edge. Fail-open: si la Edge no responde, no bloquea.
+ */
+async function validateViaEdge(dataUrl: string, skip: SelfieValidation): Promise<SelfieValidation> {
+  const base = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!base || !key) {
+    console.warn("[selfie-validation] edge: faltan SUPABASE_URL/SERVICE_ROLE — fail-open");
+    return skip;
+  }
+  try {
+    const res = await fetch(`${base}/functions/v1/validate-selfie`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+      body: JSON.stringify({ dataUrl }),
+    });
+    if (!res.ok) {
+      console.warn(`[selfie-validation] edge ${res.status} — fail-open`);
+      return skip;
+    }
+    const data = (await res.json()) as unknown;
+    if (data && typeof (data as { ok?: unknown }).ok === "boolean") return data as SelfieValidation;
+    return skip;
+  } catch (e) {
+    console.warn("[selfie-validation] edge fetch failed — fail-open", e);
+    return skip;
+  }
+}
+
 export async function validateSelfie(dataUrl: string): Promise<{
   ok: true;
   verdict: SelfieVerdict;
@@ -64,6 +98,11 @@ export async function validateSelfie(dataUrl: string): Promise<{
     reason: "Validación omitida (servicio no disponible)",
   };
   const SKIP = { ok: true as const, verdict: skipVerdict };
+
+  // Camino Vertex AI vía Edge Function de Supabase (service account). Opt-in por entorno.
+  if (process.env.SELFIE_VALIDATOR === "edge") {
+    return validateViaEdge(dataUrl, SKIP);
+  }
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
