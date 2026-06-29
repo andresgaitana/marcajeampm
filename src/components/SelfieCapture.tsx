@@ -123,7 +123,7 @@ export function SelfieCapture({
     try {
       const res = await runLivenessCheck(video, {
         blinksRequired: 1,
-        timeoutMs: 9000,
+        timeoutMs: 6000,
         handle: livenessHandle.current,
         onProgress: (p) => setFaceSeen(p.faceDetected),
       });
@@ -218,7 +218,7 @@ export function SelfieCapture({
               ) : (
                 <>
                   <Loader2 className="h-5 w-5 animate-spin" />
-                  Acerca tu rostro a la cámara…
+                  Centra tu rostro, o toca Tomar selfie
                 </>
               )}
             </div>
@@ -275,12 +275,24 @@ export function SelfieCapture({
             </Button>
           </>
         ) : scanning ? (
-          // Durante el parpadeo: solo permitir cancelar (la captura es automática).
-          onCancel && (
-            <Button type="button" variant="outline" className="flex-1 h-14" onClick={onCancel}>
-              Cancelar
+          // Durante el parpadeo la captura es automática, PERO el botón manual SIEMPRE
+          // está disponible: así nadie queda atascado si la cámara no detecta el rostro
+          // (mala posición/luz) o si los modelos tardan en cargar.
+          <>
+            {onCancel && (
+              <Button type="button" variant="outline" className="h-14 px-6" onClick={onCancel}>
+                Cancelar
+              </Button>
+            )}
+            <Button
+              type="button"
+              className="flex-1 h-14 bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={snap}
+            >
+              <Camera className="mr-2 h-5 w-5" />
+              Tomar selfie
             </Button>
-          )
+          </>
         ) : (
           <>
             {onCancel && (
