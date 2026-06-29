@@ -217,8 +217,15 @@ export const markAttendance = createServerFn({ method: "POST" })
     }
 
     // 3.5) Verificación de IDENTIDAD facial contra la foto de referencia.
-    // Política degradada: solo se exige si el colaborador ya está enrolado
-    // (tiene face_descriptor). Los no enrolados marcan normal hasta enrolarse.
+    // El enrolamiento es OBLIGATORIO: nadie marca sin rostro registrado, EXCEPTO la
+    // seguridad tercerizada (cuenta rotativa compartida, sin foto de referencia).
+    const isEnrolled = Array.isArray(employee.face_descriptor) && employee.face_descriptor.length === 128;
+    if (!isEnrolled && employee.role !== "seguridad_tercerizada") {
+      return {
+        ok: false as const,
+        error: "No tienes tu rostro registrado. Pídele a tu Gerente que te enrole antes de marcar.",
+      };
+    }
     let faceOverrideBy: string | null = null;
     if (Array.isArray(employee.face_descriptor) && employee.face_descriptor.length === 128) {
       const matches = Array.isArray(data.faceDescriptor)
