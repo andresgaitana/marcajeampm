@@ -957,9 +957,17 @@ function evalWeekStart(iso: string): string {
   d.setUTCDate(d.getUTCDate() - back);
   return d.toISOString().slice(0, 10);
 }
-/** Turnos finalizados mínimos para poder calificar (Productos 4, MBK 6). */
+/** Turnos finalizados mínimos para nota completa (Productos 4, MBK 6). */
 function minTurnos(role: string): number {
   return role === "MBK" ? 6 : 4;
+}
+type KpiState = "full" | "partial" | "insufficient";
+/** Estado de la nota: completa (≥mín), parcial (mín-1: 3/4 o 5/6) o insuficiente. */
+function kpiState(finalizados: number, role: string): KpiState {
+  const min = minTurnos(role);
+  if (finalizados >= min) return "full";
+  if (finalizados >= min - 1) return "partial";
+  return "insufficient";
 }
 /** Avance del corte: % de turnos finalizados sobre los esperados (4 Productos / 6 MBK).
  * Ej.: 2 de 4 = 50%. Llega a 100% cuando se cumple el mínimo para calificar. */
@@ -1002,11 +1010,13 @@ function KpiPanel() {
 
   const exportCsv = () => {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Avance % del corte", "Suficiente", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje"];
+    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Avance % del corte", "Estado nota", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje"];
+    const estadoLbl: Record<KpiState, string> = { full: "Completa", partial: "Parcial", insufficient: "Insuficiente" };
     const lines = [header.join(",")].concat(
       rows.map((r) => {
-        const suf = r.finalizados >= minTurnos(r.role);
-        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), `${avancePct(r.finalizados, r.role)}%`, suf ? "Sí" : "No", r.incidencias, suf ? r.scorePuntualidad : "", r.olvidos, r.ajustes, suf ? r.scoreMarcaje : ""].join(",");
+        const state = kpiState(r.finalizados, r.role);
+        const showNota = state !== "insufficient";
+        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), `${avancePct(r.finalizados, r.role)}%`, estadoLbl[state], r.incidencias, showNota ? r.scorePuntualidad : "", r.olvidos, r.ajustes, showNota ? r.scoreMarcaje : ""].join(",");
       }),
     );
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -1056,28 +1066,31 @@ function KpiPanel() {
             ) : rows.length === 0 ? (
               <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Sin marcajes de caja/MBK en esta semana.</TableCell></TableRow>
             ) : rows.map((r) => {
-              const suf = r.finalizados >= minTurnos(r.role);
+              const min = minTurnos(r.role);
+              const state = kpiState(r.finalizados, r.role);
+              const showNota = state !== "insufficient"; // completa o parcial
               return (
               <Fragment key={r.employeeId}>
-                <TableRow className={suf ? "" : "opacity-70"}>
+                <TableRow className={state === "insufficient" ? "opacity-70" : ""}>
                   <TableCell className="font-medium">
                     {r.name}
-                    {!suf && <div className="text-[11px] text-amber-700">Datos insuficientes</div>}
+                    {state === "partial" && <div className="text-[11px] text-amber-700">Nota parcial ({r.finalizados}/{min})</div>}
+                    {state === "insufficient" && <div className="text-[11px] text-amber-700">Datos insuficientes</div>}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{r.store}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.role}</TableCell>
                   <TableCell className="text-center">
-                    <span className={suf ? "font-medium" : "text-amber-700 font-semibold"}>{r.finalizados}</span>
-                    <span className="text-muted-foreground text-xs">/{minTurnos(r.role)}</span>
+                    <span className={state === "full" ? "font-medium" : "text-amber-700 font-semibold"}>{r.finalizados}</span>
+                    <span className="text-muted-foreground text-xs">/{min}</span>
                   </TableCell>
                   <TableCell className="text-center">
-                    {suf ? (
-                      <><span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span><ScoreBadge n={r.scorePuntualidad} /></>
+                    {showNota ? (
+                      <><span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span><ScoreBadge n={r.scorePuntualidad} />{state === "partial" && <span className="block text-[10px] text-amber-700">parcial</span>}</>
                     ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-center">
-                    {suf ? (
-                      <><span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span><ScoreBadge n={r.scoreMarcaje} /></>
+                    {showNota ? (
+                      <><span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span><ScoreBadge n={r.scoreMarcaje} />{state === "partial" && <span className="block text-[10px] text-amber-700">parcial</span>}</>
                     ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-center">
@@ -1091,7 +1104,17 @@ function KpiPanel() {
                 </TableRow>
                 {open[r.employeeId] && (
                   <TableRow className="bg-secondary/30">
-                    <TableCell colSpan={8} className="text-xs">
+                    <TableCell colSpan={8} className="text-xs space-y-2">
+                      {state === "partial" && (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
+                          ℹ️ <strong>Nota parcial:</strong> calculada sobre {r.finalizados} de {min} turnos finalizados (faltó {min - r.finalizados}). Sirve de referencia; <strong>el GT define la nota final</strong> según si los turnos faltantes son justificados.
+                        </div>
+                      )}
+                      {state === "insufficient" && (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
+                          <strong>Datos insuficientes:</strong> solo {r.finalizados} de {min} turnos finalizados; se necesitan al menos {min - 1} para una nota parcial. Revisar si las faltas son justificadas (Ausencias).
+                        </div>
+                      )}
                       {r.detalle.length === 0 ? (
                         <span className="text-muted-foreground">Sin entradas registradas esta semana.</span>
                       ) : (
@@ -1117,7 +1140,7 @@ function KpiPanel() {
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). Solo se califica con ≥4 turnos finalizados (Productos) o ≥6 (MBK); por debajo aparece <strong>"Datos insuficientes"</strong> y no se sugiere nota.{" "}
+        <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). Nota <strong>completa</strong> con 4 turnos finalizados (Productos) o 6 (MBK); <strong>parcial</strong> con 3/4 o 5/6 (de referencia, el GT define la final); por debajo, <strong>"Datos insuficientes"</strong>.{" "}
         <strong>Puntualidad</strong>: incidencia = llegada &gt;5 min después del inicio (Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00).{" "}
         <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida (los marcajes duplicados &lt;10 min no cuentan); ajustes = marcajes forzados por un supervisor. Nota sugerida 1-5; tomala como referencia y ajustá si hay justificación.{" "}
         <strong>Avance</strong> = % de turnos finalizados sobre los esperados del corte (4 Productos / 6 MBK); ej. 2 de 4 = 50%. Llega a 100% al cumplir el mínimo para calificar. Navegá con ‹ › a la <strong>semana en curso</strong> para verlo subir día a día.
