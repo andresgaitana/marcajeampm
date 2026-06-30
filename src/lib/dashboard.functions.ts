@@ -884,7 +884,9 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
           }
         }
       }
-      if (open && open.inWeek) olvidos++; // última entrada de la semana sin cerrar
+      // Última entrada abierta: solo es "olvido" si el turno ya debió cerrar (>14h sin
+      // salida). Si entró hace poco (turno EN CURSO a media semana), aún no es olvido.
+      if (open && open.inWeek && Date.now() - open.ms > SHIFT_MAX_MS) olvidos++;
       const ajustes = evs.filter((v) => v.inWeek && v.override).length;
 
       return {

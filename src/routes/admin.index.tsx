@@ -961,13 +961,13 @@ function evalWeekStart(iso: string): string {
 function minTurnos(role: string): number {
   return role === "MBK" ? 6 : 4;
 }
-type KpiState = "full" | "partial" | "insufficient";
-/** Estado de la nota: completa (≥mín), parcial (mín-1: 3/4 o 5/6) o insuficiente. */
-function kpiState(finalizados: number, role: string): KpiState {
-  const min = minTurnos(role);
-  if (finalizados >= min) return "full";
-  if (finalizados >= min - 1) return "partial";
-  return "insufficient";
+type KpiState = "complete" | "building" | "nodata";
+/** Estado de la nota: la nota se CONSTRUYE día a día. "complete" cuando se cumple el
+ * mínimo de turnos (semana madura); "building" mientras se va llenando; "nodata" sin
+ * marcajes que evaluar. La nota se muestra desde el primer turno (no se bloquea). */
+function kpiState(finalizados: number, turnos: number, role: string): KpiState {
+  if (turnos <= 0) return "nodata";
+  return finalizados >= minTurnos(role) ? "complete" : "building";
 }
 /** Avance del corte: % de turnos finalizados sobre los esperados (4 Productos / 6 MBK).
  * Ej.: 2 de 4 = 50%. Llega a 100% cuando se cumple el mínimo para calificar. */
@@ -1011,11 +1011,11 @@ function KpiPanel() {
   const exportCsv = () => {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
     const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Avance % del corte", "Estado nota", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje"];
-    const estadoLbl: Record<KpiState, string> = { full: "Completa", partial: "Parcial", insufficient: "Insuficiente" };
+    const estadoLbl: Record<KpiState, string> = { complete: "Completa", building: "En construcción", nodata: "Sin datos" };
     const lines = [header.join(",")].concat(
       rows.map((r) => {
-        const state = kpiState(r.finalizados, r.role);
-        const showNota = state !== "insufficient";
+        const state = kpiState(r.finalizados, r.turnos, r.role);
+        const showNota = state !== "nodata";
         return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), `${avancePct(r.finalizados, r.role)}%`, estadoLbl[state], r.incidencias, showNota ? r.scorePuntualidad : "", r.olvidos, r.ajustes, showNota ? r.scoreMarcaje : ""].join(",");
       }),
     );
@@ -1067,30 +1067,31 @@ function KpiPanel() {
               <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Sin marcajes de caja/MBK en esta semana.</TableCell></TableRow>
             ) : rows.map((r) => {
               const min = minTurnos(r.role);
-              const state = kpiState(r.finalizados, r.role);
-              const showNota = state !== "insufficient"; // completa o parcial
+              const state = kpiState(r.finalizados, r.turnos, r.role);
+              const showNota = state !== "nodata";
+              const building = state === "building";
               return (
               <Fragment key={r.employeeId}>
-                <TableRow className={state === "insufficient" ? "opacity-70" : ""}>
+                <TableRow className={state === "nodata" ? "opacity-70" : ""}>
                   <TableCell className="font-medium">
                     {r.name}
-                    {state === "partial" && <div className="text-[11px] text-amber-700">Nota parcial ({r.finalizados}/{min})</div>}
-                    {state === "insufficient" && <div className="text-[11px] text-amber-700">Datos insuficientes</div>}
+                    {building && <div className="text-[11px] text-amber-700">En construcción ({r.finalizados}/{min})</div>}
+                    {state === "nodata" && <div className="text-[11px] text-muted-foreground">Sin marcajes</div>}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{r.store}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.role}</TableCell>
                   <TableCell className="text-center">
-                    <span className={state === "full" ? "font-medium" : "text-amber-700 font-semibold"}>{r.finalizados}</span>
+                    <span className={state === "complete" ? "font-medium" : "text-amber-700 font-semibold"}>{r.finalizados}</span>
                     <span className="text-muted-foreground text-xs">/{min}</span>
                   </TableCell>
                   <TableCell className="text-center">
                     {showNota ? (
-                      <><span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span><ScoreBadge n={r.scorePuntualidad} />{state === "partial" && <span className="block text-[10px] text-amber-700">parcial</span>}</>
+                      <><span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span><ScoreBadge n={r.scorePuntualidad} /></>
                     ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-center">
                     {showNota ? (
-                      <><span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span><ScoreBadge n={r.scoreMarcaje} />{state === "partial" && <span className="block text-[10px] text-amber-700">parcial</span>}</>
+                      <><span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span><ScoreBadge n={r.scoreMarcaje} /></>
                     ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-center">
@@ -1105,14 +1106,14 @@ function KpiPanel() {
                 {open[r.employeeId] && (
                   <TableRow className="bg-secondary/30">
                     <TableCell colSpan={8} className="text-xs space-y-2">
-                      {state === "partial" && (
+                      {building && (
                         <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
-                          ℹ️ <strong>Nota parcial:</strong> calculada sobre {r.finalizados} de {min} turnos finalizados (faltó {min - r.finalizados}). Sirve de referencia; <strong>el GT define la nota final</strong> según si los turnos faltantes son justificados.
+                          ℹ️ <strong>Nota en construcción:</strong> se actualiza cada día/turno. Va por {r.finalizados} de {min} turnos finalizados; al llegar a {min} la semana queda completa. Si faltan turnos al cierre, el GT revisa si es justificado (Ausencias) y define la nota final.
                         </div>
                       )}
-                      {state === "insufficient" && (
-                        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
-                          <strong>Datos insuficientes:</strong> solo {r.finalizados} de {min} turnos finalizados; se necesitan al menos {min - 1} para una nota parcial. Revisar si las faltas son justificadas (Ausencias).
+                      {state === "nodata" && (
+                        <div className="rounded-md border border-border bg-muted/40 px-2 py-1 text-muted-foreground">
+                          Sin marcajes registrados en esta semana.
                         </div>
                       )}
                       {r.detalle.length === 0 ? (
@@ -1140,7 +1141,7 @@ function KpiPanel() {
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). Nota <strong>completa</strong> con 4 turnos finalizados (Productos) o 6 (MBK); <strong>parcial</strong> con 3/4 o 5/6 (de referencia, el GT define la final); por debajo, <strong>"Datos insuficientes"</strong>.{" "}
+        <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). <strong>La nota se construye día a día</strong>: cada turno marcado actualiza Puntualidad y Marcaje al instante. Aparece <em>"En construcción"</em> mientras la semana avanza y queda <strong>completa</strong> al llegar a 4 turnos (Productos) o 6 (MBK). Un turno en curso (sin salida aún) no cuenta como olvido hasta pasadas 14h.{" "}
         <strong>Puntualidad</strong>: incidencia = llegada &gt;5 min después del inicio (Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00).{" "}
         <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida (los marcajes duplicados &lt;10 min no cuentan); ajustes = marcajes forzados por un supervisor. Nota sugerida 1-5; tomala como referencia y ajustá si hay justificación.{" "}
         <strong>Avance</strong> = % de turnos finalizados sobre los esperados del corte (4 Productos / 6 MBK); ej. 2 de 4 = 50%. Llega a 100% al cumplir el mínimo para calificar. Navegá con ‹ › a la <strong>semana en curso</strong> para verlo subir día a día.
