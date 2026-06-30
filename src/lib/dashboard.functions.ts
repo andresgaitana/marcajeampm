@@ -717,3 +717,171 @@ export const setStoreStaffing = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return { ok: true as const };
   });
+
+// ───────────────────────── KPI de Asistencia y Puntualidad ─────────────────────────
+// Extrae 2 KPIs por colaborador (caja/MBK) para alimentar la evaluación semanal:
+//  - Puntualidad en turnos  (incidencias de llegada tarde, tolerancia ±5 min)
+//  - Marcaje correcto de entrada/salida (olvidos + ajustes manuales)
+// Horarios esperados (entrada): Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00.
+
+const LATE_TOLERANCE_MIN = 5;
+const SHIFT_MAX_MS = 14 * 3600 * 1000;
+
+/** Inicio esperado (min desde medianoche) y turno, según rol y hora de entrada. */
+function expectedStart(role: string, mins: number): { start: number; turno: "AM" | "PM" } {
+  if (role === "agente_mbk") {
+    // MBK: AM 6:00 (entradas 4:00–11:00) / PM 14:00 (resto)
+    return mins >= 240 && mins < 660 ? { start: 360, turno: "AM" } : { start: 840, turno: "PM" };
+  }
+  // Productos (cajero): AM 6:00 (entradas 4:00–16:00) / PM 18:00 (resto)
+  return mins >= 240 && mins < 960 ? { start: 360, turno: "AM" } : { start: 1080, turno: "PM" };
+}
+
+/** # incidencias de puntualidad → nota 1-5 (rúbrica de evaluación). */
+function scorePuntualidad(incidencias: number): number {
+  if (incidencias <= 0) return 5;
+  if (incidencias === 1) return 4;
+  if (incidencias === 2) return 3;
+  if (incidencias === 3) return 2;
+  return 1;
+}
+/** Olvidos de marcaje + ajustes manuales → nota 1-5. */
+function scoreMarcaje(olvidos: number, ajustes: number): number {
+  if (olvidos >= 4) return 1;
+  let s = olvidos === 0 ? 5 : olvidos === 1 ? 4 : olvidos === 2 ? 3 : 2;
+  if (ajustes > 0) s = Math.min(s, 2); // requiere ajustes manuales / manipulación
+  return s;
+}
+
+export const getAttendanceKpis = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      storeId: z.string().uuid().optional(),
+      zoneId: z.string().uuid().optional(),
+    }).parse(i ?? {}),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    let effective: string[] | "all" = scope.storeIds;
+    if (data.storeId) {
+      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+    } else if (data.zoneId) {
+      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+      let ids = (zs ?? []).map((s) => s.id as string);
+      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+      effective = ids;
+    }
+
+    // Semana: lunes 00:00 NI a +7 días.
+    const ref = data.weekStart ? new Date(data.weekStart + "T00:00:00Z") : new Date(Date.now() - NI_OFFSET_MS);
+    const monday = startOfWeek(ref);
+    const weekStart = monday.toISOString().slice(0, 10);
+    const fromMs = new Date(weekStart + "T00:00:00Z").getTime() + NI_OFFSET_MS;
+    const fromISO = new Date(fromMs).toISOString();
+    const toISO = new Date(fromMs + 7 * 24 * 3600 * 1000).toISOString();
+
+    let sq = supabaseAdmin.from("stores").select("id, code").eq("active", true).order("code");
+    if (effective !== "all") sq = sq.in("id", effective);
+    const { data: storesData } = await sq;
+    const stores = storesData ?? [];
+    const storeIds = stores.map((s) => s.id as string);
+    const storeCode = new Map(stores.map((s) => [s.id as string, s.code as string]));
+    if (!storeIds.length) return { weekStart, rows: [] };
+
+    const { data: recs } = await supabaseAdmin
+      .from("attendance_records")
+      .select("type, created_at, store_id, face_override_by, employee:employees!employee_id(id, full_name, role)")
+      .gte("created_at", fromISO).lt("created_at", toISO)
+      .in("store_id", storeIds).limit(50000);
+
+    type Ev = { type: "entrada" | "salida"; ms: number; date: string; mins: number; override: boolean };
+    type Emp = { id: string; name: string; role: string; storeId: string; evs: Ev[] };
+    const byEmp = new Map<string, Emp>();
+    for (const rec of recs ?? []) {
+      const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
+      if (!emp) continue;
+      const role = emp.role as string;
+      if (role !== "cajero" && role !== "agente_mbk") continue;
+      const id = emp.id as string;
+      if (!byEmp.has(id)) byEmp.set(id, { id, name: emp.full_name as string, role, storeId: rec.store_id as string, evs: [] });
+      const t = new Date(rec.created_at as string).getTime();
+      const local = new Date(t - NI_OFFSET_MS);
+      byEmp.get(id)!.evs.push({
+        type: rec.type as "entrada" | "salida",
+        ms: t,
+        date: local.toISOString().slice(0, 10),
+        mins: local.getUTCHours() * 60 + local.getUTCMinutes(),
+        override: !!rec.face_override_by,
+      });
+    }
+
+    const rows = [...byEmp.values()].map((e) => {
+      e.evs.sort((a, b) => a.ms - b.ms);
+
+      // Puntualidad: agrupar entradas por (fecha, turno) y tomar la más temprana.
+      const shiftMap = new Map<string, { date: string; turno: "AM" | "PM"; mins: number; start: number }>();
+      for (const ev of e.evs) {
+        if (ev.type !== "entrada") continue;
+        const { start, turno } = expectedStart(e.role, ev.mins);
+        const key = `${ev.date}|${turno}`;
+        const cur = shiftMap.get(key);
+        if (!cur || ev.mins < cur.mins) shiftMap.set(key, { date: ev.date, turno, mins: ev.mins, start });
+      }
+      const detalle = [...shiftMap.values()]
+        .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.mins - b.mins))
+        .map((s) => {
+          const atraso = s.mins - s.start;
+          return {
+            date: s.date,
+            turno: s.turno,
+            hora: `${String(Math.floor(s.mins / 60)).padStart(2, "0")}:${String(s.mins % 60).padStart(2, "0")}`,
+            atraso,
+            tarde: atraso > LATE_TOLERANCE_MIN,
+          };
+        });
+      const incidencias = detalle.filter((d) => d.tarde).length;
+
+      // Marcaje correcto: emparejar entrada→salida en orden cronológico.
+      let olvidos = 0;
+      let completos = 0;
+      let open: Ev | null = null;
+      for (const ev of e.evs) {
+        if (ev.type === "entrada") {
+          if (open) olvidos++; // entrada anterior nunca se cerró
+          open = ev;
+        } else {
+          if (open && ev.ms - open.ms <= SHIFT_MAX_MS) {
+            completos++;
+            open = null;
+          } else {
+            olvidos++; // salida sin entrada
+            if (open) {
+              olvidos++; // entrada previa huérfana (gap > 14h)
+              open = null;
+            }
+          }
+        }
+      }
+      if (open) olvidos++; // última entrada sin cerrar
+      const ajustes = e.evs.filter((v) => v.override).length;
+
+      return {
+        employeeId: e.id,
+        name: e.name,
+        role: e.role === "agente_mbk" ? "MBK" : "Productos",
+        store: storeCode.get(e.storeId) ?? "",
+        turnos: detalle.length,
+        incidencias,
+        scorePuntualidad: scorePuntualidad(incidencias),
+        completos,
+        olvidos,
+        ajustes,
+        scoreMarcaje: scoreMarcaje(olvidos, ajustes),
+        detalle,
+      };
+    }).sort((a, b) => (a.store < b.store ? -1 : a.store > b.store ? 1 : a.name.localeCompare(b.name)));
+
+    return { weekStart, rows };
+  });

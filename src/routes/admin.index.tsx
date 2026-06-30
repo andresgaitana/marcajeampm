@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance, getStaffingReport } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance, getStaffingReport, getAttendanceKpis } from "@/lib/dashboard.functions";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -78,6 +78,7 @@ import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
   Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
+  ClipboardCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -187,6 +188,10 @@ function AdminDashboard() {
           <ClipboardList className="h-4 w-4 mr-2" />
           Dotación
         </TabsTrigger>
+        <TabsTrigger value="kpis" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <ClipboardCheck className="h-4 w-4 mr-2" />
+          Evaluación
+        </TabsTrigger>
         <TabsTrigger value="attendance" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <History className="h-4 w-4 mr-2" />
           Marcajes
@@ -222,6 +227,9 @@ function AdminDashboard() {
       </TabsContent>
       <TabsContent value="staffing">
         <StaffingPanel />
+      </TabsContent>
+      <TabsContent value="kpis">
+        <KpiPanel />
       </TabsContent>
       <TabsContent value="attendance">
         <AttendancePanel />
@@ -934,6 +942,152 @@ function StaffingPanel() {
       </Tabs>
       <p className="text-xs text-muted-foreground">
         Productos = cajeros; MBK = Agente MBK. <strong>Real</strong> = quienes marcaron entrada en ese corte; <strong>Plan</strong> = meta según el presupuesto y el día. Verde = cumple, ámbar = falta. <strong>Exportar Excel</strong> baja el corte seleccionado.
+      </p>
+    </div>
+  );
+}
+
+// =====================================================================
+// EVALUACIÓN: KPI de Asistencia y Puntualidad (caja/MBK)
+// =====================================================================
+/** Lunes (yyyy-mm-dd) de la semana que contiene la fecha NI dada. */
+function mondayNI(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  const dow = (d.getUTCDay() + 6) % 7; // 0 = lunes
+  d.setUTCDate(d.getUTCDate() - dow);
+  return d.toISOString().slice(0, 10);
+}
+
+function ScoreBadge({ n }: { n: number }) {
+  const cls =
+    n >= 5 ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+    : n === 4 ? "bg-green-100 text-green-800 border-green-200"
+    : n === 3 ? "bg-amber-100 text-amber-800 border-amber-200"
+    : "bg-red-100 text-red-800 border-red-200";
+  return <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full border text-sm font-bold ${cls}`}>{n}</span>;
+}
+
+function KpiPanel() {
+  const kpiFn = useServerFn(getAttendanceKpis);
+  const filter = useStoreFilter();
+  const [weekStart, setWeekStart] = useState(() => mondayNI(todayNI()));
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+
+  const args: { weekStart: string; storeId?: string; zoneId?: string } = { weekStart };
+  if (filter.storeId !== "all") args.storeId = filter.storeId;
+  else if (filter.zoneId !== "all") args.zoneId = filter.zoneId;
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["kpis", weekStart, filter.zoneId, filter.storeId],
+    queryFn: () => kpiFn({ data: args }),
+  });
+  const rows = data?.rows ?? [];
+  const weekEnd = addDaysISO(weekStart, 6);
+
+  const exportCsv = () => {
+    const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const header = ["Tienda", "Colaborador", "Área", "Turnos", "Incid. puntualidad", "Nota puntualidad", "Olvidos marcaje", "Ajustes", "Nota marcaje"];
+    const lines = [header.join(",")].concat(
+      rows.map((r) =>
+        [r.store, esc(r.name), r.role, r.turnos, r.incidencias, r.scorePuntualidad, r.olvidos, r.ajustes, r.scoreMarcaje].join(","),
+      ),
+    );
+    const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `kpi_asistencia_${weekStart}.csv`; a.click(); URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-foreground">KPI de Asistencia y Puntualidad</h2>
+          <p className="text-sm text-muted-foreground">Para la evaluación semanal de caja y MBK. Nota sugerida 1-5 por KPI.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {filter.bar}
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" onClick={() => setWeekStart(addDaysISO(weekStart, -7))}>‹</Button>
+            <span className="text-sm font-medium tabular-nums w-24 text-center">{fmtDM(weekStart)} – {fmtDM(weekEnd)}</span>
+            <Button variant="outline" size="sm" onClick={() => setWeekStart(addDaysISO(weekStart, 7))}>›</Button>
+          </div>
+          <Button variant="outline" size="sm" onClick={exportCsv} disabled={rows.length === 0}>
+            <Download className="h-4 w-4 mr-1" /> Exportar Excel
+          </Button>
+        </div>
+      </div>
+      <div className="bg-card rounded-2xl border border-border overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-secondary/50">
+              <TableHead>Colaborador</TableHead>
+              <TableHead>Tienda</TableHead>
+              <TableHead>Área</TableHead>
+              <TableHead className="text-center">Turnos</TableHead>
+              <TableHead className="text-center">Puntualidad</TableHead>
+              <TableHead className="text-center">Marcaje correcto</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isError ? (
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-destructive">{error instanceof Error ? error.message : "Error"}</TableCell></TableRow>
+            ) : isLoading ? (
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Sin marcajes de caja/MBK en esta semana.</TableCell></TableRow>
+            ) : rows.map((r) => (
+              <Fragment key={r.employeeId}>
+                <TableRow>
+                  <TableCell className="font-medium">{r.name}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.store}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{r.role}</TableCell>
+                  <TableCell className="text-center">{r.turnos}</TableCell>
+                  <TableCell className="text-center">
+                    <span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span>
+                    <ScoreBadge n={r.scorePuntualidad} />
+                  </TableCell>
+                  <TableCell className="text-center">
+                    <span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span>
+                    <ScoreBadge n={r.scoreMarcaje} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => setOpen((o) => ({ ...o, [r.employeeId]: !o[r.employeeId] }))}>
+                      {open[r.employeeId] ? "Ocultar" : "Detalle"}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+                {open[r.employeeId] && (
+                  <TableRow className="bg-secondary/30">
+                    <TableCell colSpan={7} className="text-xs">
+                      {r.detalle.length === 0 ? (
+                        <span className="text-muted-foreground">Sin entradas registradas esta semana.</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2 py-1">
+                          {r.detalle.map((d, i) => (
+                            <span
+                              key={i}
+                              className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${d.tarde ? "bg-red-50 border-red-200 text-red-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}
+                            >
+                              {fmtDM(d.date)} {d.turno} · {d.hora}
+                              {d.tarde ? ` (+${d.atraso}m tarde)` : " ✓"}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        <strong>Puntualidad</strong>: incidencia = llegada &gt;5 min después del inicio (Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00).{" "}
+        <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida; ajustes = marcajes forzados por un supervisor.{" "}
+        Nota sugerida 1-5 (5 = excelente). Tomá la nota como referencia y ajustá si hay justificación.
       </p>
     </div>
   );
