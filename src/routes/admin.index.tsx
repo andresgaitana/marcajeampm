@@ -961,6 +961,19 @@ function evalWeekStart(iso: string): string {
 function minTurnos(role: string): number {
   return role === "MBK" ? 6 : 4;
 }
+/** Nota preliminar del módulo Asistencia con los 2 KPIs automáticos (Punt 40% + Marcaje 25%,
+ * re-normalizados a 65%). Es direccional: aún falta Ausencias (35%, manual). */
+function prelimNota(punt: number, marc: number): number {
+  return Math.round(((punt * 40 + marc * 25) / 65) * 10) / 10;
+}
+function PrelimBadge({ n }: { n: number }) {
+  const cls =
+    n >= 4.5 ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+    : n >= 3.5 ? "bg-green-100 text-green-800 border-green-200"
+    : n >= 2.5 ? "bg-amber-100 text-amber-800 border-amber-200"
+    : "bg-red-100 text-red-800 border-red-200";
+  return <span className={`inline-flex items-center gap-1 rounded-full border px-2 h-7 text-sm font-bold ${cls}`}>{n.toFixed(1)}<span className="text-[10px] font-normal opacity-70">/5</span></span>;
+}
 
 function ScoreBadge({ n }: { n: number }) {
   const cls =
@@ -990,11 +1003,11 @@ function KpiPanel() {
 
   const exportCsv = () => {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Suficiente", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje"];
+    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Suficiente", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje", "Preliminar asist. (sin Ausencias)"];
     const lines = [header.join(",")].concat(
       rows.map((r) => {
         const suf = r.finalizados >= minTurnos(r.role);
-        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), suf ? "Sí" : "No", r.incidencias, suf ? r.scorePuntualidad : "", r.olvidos, r.ajustes, suf ? r.scoreMarcaje : ""].join(",");
+        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), suf ? "Sí" : "No", r.incidencias, suf ? r.scorePuntualidad : "", r.olvidos, r.ajustes, suf ? r.scoreMarcaje : "", suf ? prelimNota(r.scorePuntualidad, r.scoreMarcaje) : ""].join(",");
       }),
     );
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -1032,16 +1045,17 @@ function KpiPanel() {
               <TableHead className="text-center">Turnos fin.</TableHead>
               <TableHead className="text-center">Puntualidad</TableHead>
               <TableHead className="text-center">Marcaje correcto</TableHead>
+              <TableHead className="text-center">Preliminar<br/><span className="text-xs font-normal text-muted-foreground">asist. (sin Ausencias)</span></TableHead>
               <TableHead></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isError ? (
-              <TableRow><TableCell colSpan={7} className="text-center py-8 text-destructive">{error instanceof Error ? error.message : "Error"}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-destructive">{error instanceof Error ? error.message : "Error"}</TableCell></TableRow>
             ) : isLoading ? (
-              <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Sin marcajes de caja/MBK en esta semana.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Sin marcajes de caja/MBK en esta semana.</TableCell></TableRow>
             ) : rows.map((r) => {
               const suf = r.finalizados >= minTurnos(r.role);
               return (
@@ -1067,6 +1081,9 @@ function KpiPanel() {
                       <><span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span><ScoreBadge n={r.scoreMarcaje} /></>
                     ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
+                  <TableCell className="text-center">
+                    {suf ? <PrelimBadge n={prelimNota(r.scorePuntualidad, r.scoreMarcaje)} /> : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => setOpen((o) => ({ ...o, [r.employeeId]: !o[r.employeeId] }))}>
                       {open[r.employeeId] ? "Ocultar" : "Detalle"}
@@ -1075,7 +1092,7 @@ function KpiPanel() {
                 </TableRow>
                 {open[r.employeeId] && (
                   <TableRow className="bg-secondary/30">
-                    <TableCell colSpan={7} className="text-xs">
+                    <TableCell colSpan={8} className="text-xs">
                       {r.detalle.length === 0 ? (
                         <span className="text-muted-foreground">Sin entradas registradas esta semana.</span>
                       ) : (
@@ -1103,7 +1120,8 @@ function KpiPanel() {
       <p className="text-xs text-muted-foreground">
         <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). Solo se califica con ≥4 turnos finalizados (Productos) o ≥6 (MBK); por debajo aparece <strong>"Datos insuficientes"</strong> y no se sugiere nota.{" "}
         <strong>Puntualidad</strong>: incidencia = llegada &gt;5 min después del inicio (Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00).{" "}
-        <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida (los marcajes duplicados &lt;10 min no cuentan); ajustes = marcajes forzados por un supervisor. Nota sugerida 1-5; tomala como referencia y ajustá si hay justificación.
+        <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida (los marcajes duplicados &lt;10 min no cuentan); ajustes = marcajes forzados por un supervisor. Nota sugerida 1-5; tomala como referencia y ajustá si hay justificación.{" "}
+        <strong>Preliminar</strong> = combinación de Puntualidad (40%) y Marcaje (25%) re-normalizada; es <em>direccional</em> — la nota final del módulo suma <strong>Ausencias (35%)</strong>, que aún se califica a mano. Navegá con ‹ › a la <strong>semana en curso</strong> para verla formándose.
       </p>
     </div>
   );
