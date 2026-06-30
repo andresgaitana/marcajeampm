@@ -950,12 +950,16 @@ function StaffingPanel() {
 // =====================================================================
 // EVALUACIÓN: KPI de Asistencia y Puntualidad (caja/MBK)
 // =====================================================================
-/** Lunes (yyyy-mm-dd) de la semana que contiene la fecha NI dada. */
-function mondayNI(iso: string): string {
+/** Sábado (yyyy-mm-dd) que inicia la semana de evaluación (Sáb→Vie) que contiene la fecha. */
+function evalWeekStart(iso: string): string {
   const d = new Date(iso + "T00:00:00Z");
-  const dow = (d.getUTCDay() + 6) % 7; // 0 = lunes
-  d.setUTCDate(d.getUTCDate() - dow);
+  const back = (d.getUTCDay() + 1) % 7; // Sáb=6→0, Dom=0→1, … Vie=5→6
+  d.setUTCDate(d.getUTCDate() - back);
   return d.toISOString().slice(0, 10);
+}
+/** Turnos finalizados mínimos para poder calificar (Productos 4, MBK 6). */
+function minTurnos(role: string): number {
+  return role === "MBK" ? 6 : 4;
 }
 
 function ScoreBadge({ n }: { n: number }) {
@@ -970,7 +974,7 @@ function ScoreBadge({ n }: { n: number }) {
 function KpiPanel() {
   const kpiFn = useServerFn(getAttendanceKpis);
   const filter = useStoreFilter();
-  const [weekStart, setWeekStart] = useState(() => mondayNI(todayNI()));
+  const [weekStart, setWeekStart] = useState(() => addDaysISO(evalWeekStart(todayNI()), -7));
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
   const args: { weekStart: string; storeId?: string; zoneId?: string } = { weekStart };
@@ -986,11 +990,12 @@ function KpiPanel() {
 
   const exportCsv = () => {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const header = ["Tienda", "Colaborador", "Área", "Turnos", "Incid. puntualidad", "Nota puntualidad", "Olvidos marcaje", "Ajustes", "Nota marcaje"];
+    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Suficiente", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje"];
     const lines = [header.join(",")].concat(
-      rows.map((r) =>
-        [r.store, esc(r.name), r.role, r.turnos, r.incidencias, r.scorePuntualidad, r.olvidos, r.ajustes, r.scoreMarcaje].join(","),
-      ),
+      rows.map((r) => {
+        const suf = r.finalizados >= minTurnos(r.role);
+        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), suf ? "Sí" : "No", r.incidencias, suf ? r.scorePuntualidad : "", r.olvidos, r.ajustes, suf ? r.scoreMarcaje : ""].join(",");
+      }),
     );
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1024,7 +1029,7 @@ function KpiPanel() {
               <TableHead>Colaborador</TableHead>
               <TableHead>Tienda</TableHead>
               <TableHead>Área</TableHead>
-              <TableHead className="text-center">Turnos</TableHead>
+              <TableHead className="text-center">Turnos fin.</TableHead>
               <TableHead className="text-center">Puntualidad</TableHead>
               <TableHead className="text-center">Marcaje correcto</TableHead>
               <TableHead></TableHead>
@@ -1037,20 +1042,30 @@ function KpiPanel() {
               <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Cargando…</TableCell></TableRow>
             ) : rows.length === 0 ? (
               <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Sin marcajes de caja/MBK en esta semana.</TableCell></TableRow>
-            ) : rows.map((r) => (
+            ) : rows.map((r) => {
+              const suf = r.finalizados >= minTurnos(r.role);
+              return (
               <Fragment key={r.employeeId}>
-                <TableRow>
-                  <TableCell className="font-medium">{r.name}</TableCell>
+                <TableRow className={suf ? "" : "opacity-70"}>
+                  <TableCell className="font-medium">
+                    {r.name}
+                    {!suf && <div className="text-[11px] text-amber-700">Datos insuficientes</div>}
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{r.store}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.role}</TableCell>
-                  <TableCell className="text-center">{r.turnos}</TableCell>
                   <TableCell className="text-center">
-                    <span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span>
-                    <ScoreBadge n={r.scorePuntualidad} />
+                    <span className={suf ? "font-medium" : "text-amber-700 font-semibold"}>{r.finalizados}</span>
+                    <span className="text-muted-foreground text-xs">/{minTurnos(r.role)}</span>
                   </TableCell>
                   <TableCell className="text-center">
-                    <span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span>
-                    <ScoreBadge n={r.scoreMarcaje} />
+                    {suf ? (
+                      <><span className="text-muted-foreground text-xs mr-2">{r.incidencias} incid.</span><ScoreBadge n={r.scorePuntualidad} /></>
+                    ) : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {suf ? (
+                      <><span className="text-muted-foreground text-xs mr-2">{r.olvidos} olv. / {r.ajustes} aj.</span><ScoreBadge n={r.scoreMarcaje} /></>
+                    ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => setOpen((o) => ({ ...o, [r.employeeId]: !o[r.employeeId] }))}>
@@ -1080,14 +1095,15 @@ function KpiPanel() {
                   </TableRow>
                 )}
               </Fragment>
-            ))}
+              );
+            })}
           </TableBody>
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
+        <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). Solo se califica con ≥4 turnos finalizados (Productos) o ≥6 (MBK); por debajo aparece <strong>"Datos insuficientes"</strong> y no se sugiere nota.{" "}
         <strong>Puntualidad</strong>: incidencia = llegada &gt;5 min después del inicio (Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00).{" "}
-        <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida; ajustes = marcajes forzados por un supervisor.{" "}
-        Nota sugerida 1-5 (5 = excelente). Tomá la nota como referencia y ajustá si hay justificación.
+        <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida (los marcajes duplicados &lt;10 min no cuentan); ajustes = marcajes forzados por un supervisor. Nota sugerida 1-5; tomala como referencia y ajustá si hay justificación.
       </p>
     </div>
   );

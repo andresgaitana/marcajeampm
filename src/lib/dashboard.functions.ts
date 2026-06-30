@@ -774,13 +774,24 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
       effective = ids;
     }
 
-    // Semana: lunes 00:00 NI a +7 días.
+    // Semana de evaluación SÁBADO→VIERNES. Corte el sábado de madrugada (04:00 NI), en
+    // el hueco entre que cierra el último PM (~6:00) y abre el AM, para que ningún turno
+    // nocturno (Productos PM 18:00→6:00) quede partido entre dos semanas.
+    const CUT_HOUR = 4;
     const ref = data.weekStart ? new Date(data.weekStart + "T00:00:00Z") : new Date(Date.now() - NI_OFFSET_MS);
-    const monday = startOfWeek(ref);
-    const weekStart = monday.toISOString().slice(0, 10);
-    const fromMs = new Date(weekStart + "T00:00:00Z").getTime() + NI_OFFSET_MS;
-    const fromISO = new Date(fromMs).toISOString();
-    const toISO = new Date(fromMs + 7 * 24 * 3600 * 1000).toISOString();
+    // Retroceder al sábado que inicia la semana (Sáb=6 → (dow+1)%7 días atrás).
+    // Sin weekStart: además -7 días para evaluar la semana YA CERRADA (default del sábado).
+    const back = (ref.getUTCDay() + 1) % 7 + (data.weekStart ? 0 : 7);
+    ref.setUTCDate(ref.getUTCDate() - back);
+    const weekStart = ref.toISOString().slice(0, 10); // sábado (yyyy-mm-dd)
+    // Sábado 04:00 NI en ms UTC = medianoche UTC de esa fecha + offset NI + 4h.
+    const weekStartMs = new Date(weekStart + "T00:00:00Z").getTime() + NI_OFFSET_MS + CUT_HOUR * 3600 * 1000;
+    const weekEndMs = weekStartMs + 7 * 24 * 3600 * 1000;
+    // Pre-buffer 12h: capturar la entrada del PM del viernes ANTERIOR que cierra este
+    // sábado (para no contar su salida como huérfana). Post-buffer 6h: capturar la salida
+    // del PM de este viernes que cierra el próximo sábado.
+    const fromISO = new Date(weekStartMs - 12 * 3600 * 1000).toISOString();
+    const toISO = new Date(weekEndMs + 6 * 3600 * 1000).toISOString();
 
     let sq = supabaseAdmin.from("stores").select("id, code").eq("active", true).order("code");
     if (effective !== "all") sq = sq.in("id", effective);
@@ -796,7 +807,7 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
       .gte("created_at", fromISO).lt("created_at", toISO)
       .in("store_id", storeIds).limit(50000);
 
-    type Ev = { type: "entrada" | "salida"; ms: number; date: string; mins: number; override: boolean };
+    type Ev = { type: "entrada" | "salida"; ms: number; date: string; mins: number; override: boolean; inWeek: boolean };
     type Emp = { id: string; name: string; role: string; storeId: string; evs: Ev[] };
     const byEmp = new Map<string, Emp>();
     for (const rec of recs ?? []) {
@@ -814,16 +825,25 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
         date: local.toISOString().slice(0, 10),
         mins: local.getUTCHours() * 60 + local.getUTCMinutes(),
         override: !!rec.face_override_by,
+        inWeek: t >= weekStartMs && t < weekEndMs, // los del buffer quedan fuera del conteo
       });
     }
 
+    const DEDUP_MS = 10 * 60 * 1000; // marcajes del mismo tipo en < 10 min = doble toque
     const rows = [...byEmp.values()].map((e) => {
       e.evs.sort((a, b) => a.ms - b.ms);
-
-      // Puntualidad: agrupar entradas por (fecha, turno) y tomar la más temprana.
-      const shiftMap = new Map<string, { date: string; turno: "AM" | "PM"; mins: number; start: number }>();
+      // Colapsar marcajes duplicados (mismo tipo en < 10 min): no son olvidos.
+      const evs: Ev[] = [];
       for (const ev of e.evs) {
-        if (ev.type !== "entrada") continue;
+        const last = evs[evs.length - 1];
+        if (last && last.type === ev.type && ev.ms - last.ms <= DEDUP_MS) continue;
+        evs.push(ev);
+      }
+
+      // Puntualidad: solo entradas DENTRO de la semana; agrupar por (fecha,turno), la más temprana.
+      const shiftMap = new Map<string, { date: string; turno: "AM" | "PM"; mins: number; start: number }>();
+      for (const ev of evs) {
+        if (ev.type !== "entrada" || !ev.inWeek) continue;
         const { start, turno } = expectedStart(e.role, ev.mins);
         const key = `${ev.date}|${turno}`;
         const cur = shiftMap.get(key);
@@ -843,29 +863,29 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
         });
       const incidencias = detalle.filter((d) => d.tarde).length;
 
-      // Marcaje correcto: emparejar entrada→salida en orden cronológico.
+      // Marcaje correcto: emparejar entrada→salida cruzando la medianoche (la salida del
+      // PM puede caer en el buffer del sábado). Se cuenta solo el turno cuya ENTRADA está
+      // dentro de la semana; la salida se sigue aunque caiga fuera.
       let olvidos = 0;
       let completos = 0;
       let open: Ev | null = null;
-      for (const ev of e.evs) {
+      for (const ev of evs) {
         if (ev.type === "entrada") {
-          if (open) olvidos++; // entrada anterior nunca se cerró
+          if (open && open.inWeek) olvidos++; // entrada de la semana que nunca se cerró
           open = ev;
         } else {
           if (open && ev.ms - open.ms <= SHIFT_MAX_MS) {
-            completos++;
+            if (open.inWeek) completos++;
             open = null;
           } else {
-            olvidos++; // salida sin entrada
-            if (open) {
-              olvidos++; // entrada previa huérfana (gap > 14h)
-              open = null;
-            }
+            if (ev.inWeek) olvidos++; // salida sin entrada
+            if (open && open.inWeek) olvidos++; // entrada previa huérfana (gap > 14h)
+            open = null;
           }
         }
       }
-      if (open) olvidos++; // última entrada sin cerrar
-      const ajustes = e.evs.filter((v) => v.override).length;
+      if (open && open.inWeek) olvidos++; // última entrada de la semana sin cerrar
+      const ajustes = evs.filter((v) => v.inWeek && v.override).length;
 
       return {
         employeeId: e.id,
@@ -873,9 +893,9 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
         role: e.role === "agente_mbk" ? "MBK" : "Productos",
         store: storeCode.get(e.storeId) ?? "",
         turnos: detalle.length,
+        finalizados: completos,
         incidencias,
         scorePuntualidad: scorePuntualidad(incidencias),
-        completos,
         olvidos,
         ajustes,
         scoreMarcaje: scoreMarcaje(olvidos, ajustes),
