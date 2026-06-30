@@ -961,18 +961,17 @@ function evalWeekStart(iso: string): string {
 function minTurnos(role: string): number {
   return role === "MBK" ? 6 : 4;
 }
-/** Nota preliminar del módulo Asistencia con los 2 KPIs automáticos (Punt 40% + Marcaje 25%,
- * re-normalizados a 65%). Es direccional: aún falta Ausencias (35%, manual). */
-function prelimNota(punt: number, marc: number): number {
-  return Math.round(((punt * 40 + marc * 25) / 65) * 10) / 10;
+/** Avance del corte: % de turnos finalizados sobre los esperados (4 Productos / 6 MBK).
+ * Ej.: 2 de 4 = 50%. Llega a 100% cuando se cumple el mínimo para calificar. */
+function avancePct(finalizados: number, role: string): number {
+  return Math.min(100, Math.round((finalizados / minTurnos(role)) * 100));
 }
-function PrelimBadge({ n }: { n: number }) {
+function AvanceBadge({ pct }: { pct: number }) {
   const cls =
-    n >= 4.5 ? "bg-emerald-100 text-emerald-800 border-emerald-200"
-    : n >= 3.5 ? "bg-green-100 text-green-800 border-green-200"
-    : n >= 2.5 ? "bg-amber-100 text-amber-800 border-amber-200"
-    : "bg-red-100 text-red-800 border-red-200";
-  return <span className={`inline-flex items-center gap-1 rounded-full border px-2 h-7 text-sm font-bold ${cls}`}>{n.toFixed(1)}<span className="text-[10px] font-normal opacity-70">/5</span></span>;
+    pct >= 100 ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+    : pct >= 50 ? "bg-amber-100 text-amber-800 border-amber-200"
+    : "bg-muted text-muted-foreground border-border";
+  return <span className={`inline-flex items-center rounded-full border px-2 h-7 text-sm font-bold ${cls}`}>{pct}%</span>;
 }
 
 function ScoreBadge({ n }: { n: number }) {
@@ -1003,11 +1002,11 @@ function KpiPanel() {
 
   const exportCsv = () => {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Suficiente", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje", "Preliminar asist. (sin Ausencias)"];
+    const header = ["Tienda", "Colaborador", "Área", "Turnos finalizados", "Mínimo", "Avance % del corte", "Suficiente", "Incid. puntualidad", "Nota puntualidad", "Olvidos", "Ajustes", "Nota marcaje"];
     const lines = [header.join(",")].concat(
       rows.map((r) => {
         const suf = r.finalizados >= minTurnos(r.role);
-        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), suf ? "Sí" : "No", r.incidencias, suf ? r.scorePuntualidad : "", r.olvidos, r.ajustes, suf ? r.scoreMarcaje : "", suf ? prelimNota(r.scorePuntualidad, r.scoreMarcaje) : ""].join(",");
+        return [r.store, esc(r.name), r.role, r.finalizados, minTurnos(r.role), `${avancePct(r.finalizados, r.role)}%`, suf ? "Sí" : "No", r.incidencias, suf ? r.scorePuntualidad : "", r.olvidos, r.ajustes, suf ? r.scoreMarcaje : ""].join(",");
       }),
     );
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -1045,7 +1044,7 @@ function KpiPanel() {
               <TableHead className="text-center">Turnos fin.</TableHead>
               <TableHead className="text-center">Puntualidad</TableHead>
               <TableHead className="text-center">Marcaje correcto</TableHead>
-              <TableHead className="text-center">Preliminar<br/><span className="text-xs font-normal text-muted-foreground">asist. (sin Ausencias)</span></TableHead>
+              <TableHead className="text-center">Avance<br/><span className="text-xs font-normal text-muted-foreground">% del corte</span></TableHead>
               <TableHead></TableHead>
             </TableRow>
           </TableHeader>
@@ -1082,7 +1081,7 @@ function KpiPanel() {
                     ) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-center">
-                    {suf ? <PrelimBadge n={prelimNota(r.scorePuntualidad, r.scoreMarcaje)} /> : <span className="text-muted-foreground">—</span>}
+                    <AvanceBadge pct={avancePct(r.finalizados, r.role)} />
                   </TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => setOpen((o) => ({ ...o, [r.employeeId]: !o[r.employeeId] }))}>
@@ -1121,7 +1120,7 @@ function KpiPanel() {
         <strong>Semana Sáb→Vie</strong> (cierra el sábado de madrugada, sin partir el turno nocturno). Solo se califica con ≥4 turnos finalizados (Productos) o ≥6 (MBK); por debajo aparece <strong>"Datos insuficientes"</strong> y no se sugiere nota.{" "}
         <strong>Puntualidad</strong>: incidencia = llegada &gt;5 min después del inicio (Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00).{" "}
         <strong>Marcaje correcto</strong>: olvidos = turnos sin par entrada/salida (los marcajes duplicados &lt;10 min no cuentan); ajustes = marcajes forzados por un supervisor. Nota sugerida 1-5; tomala como referencia y ajustá si hay justificación.{" "}
-        <strong>Preliminar</strong> = combinación de Puntualidad (40%) y Marcaje (25%) re-normalizada; es <em>direccional</em> — la nota final del módulo suma <strong>Ausencias (35%)</strong>, que aún se califica a mano. Navegá con ‹ › a la <strong>semana en curso</strong> para verla formándose.
+        <strong>Avance</strong> = % de turnos finalizados sobre los esperados del corte (4 Productos / 6 MBK); ej. 2 de 4 = 50%. Llega a 100% al cumplir el mínimo para calificar. Navegá con ‹ › a la <strong>semana en curso</strong> para verlo subir día a día.
       </p>
     </div>
   );
