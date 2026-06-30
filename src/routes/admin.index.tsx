@@ -820,7 +820,11 @@ function DotCell({ c }: { c: { real: number; plan: number; names: string[] } }) 
     <div className="min-w-0">
       <span className={`font-semibold ${color}`}>{c.real}/{c.plan}</span>
       {c.names.length > 0 && (
-        <div className="text-xs text-muted-foreground truncate max-w-[160px]" title={c.names.join(", ")}>{c.names.join(", ")}</div>
+        <ul className="mt-0.5 space-y-0.5 text-xs text-muted-foreground">
+          {c.names.map((n, i) => (
+            <li key={i} className="leading-tight break-words">{n}</li>
+          ))}
+        </ul>
       )}
     </div>
   );
