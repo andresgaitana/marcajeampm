@@ -1368,20 +1368,22 @@ function DashboardPanel() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {isStore ? (
           <>
-            <KPI label="Colaboradores" value={m.employees_total} accent="muted" />
-            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% asistencia`} accent="entry" />
+            <KPI label="Dotación hoy" value={`${m.dotacion_today.real}/${m.dotacion_today.plan}`} sub={`${m.dotacion_today.pct}% cubierto`} accent="entry" />
+            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% del total`} accent="muted" />
             <KPI label="Dentro ahora" value={m.inside_now} accent="primary" />
             <KPI label="Entradas hoy" value={m.today_entries} accent="exit" />
           </>
         ) : (
           <>
             <KPI label={isSuper ? "Tiendas" : "Tiendas (mi zona)"} value={m.stores_count} accent="primary" />
-            <KPI label="Colaboradores" value={m.employees_total} accent="muted" />
-            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% asistencia`} accent="entry" />
+            <KPI label="Dotación hoy" value={`${m.dotacion_today.real}/${m.dotacion_today.plan}`} sub={`${m.dotacion_today.pct}% cubierto`} accent="entry" />
+            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% del total`} accent="muted" />
             <KPI label="Dentro ahora" value={m.inside_now} accent="exit" />
           </>
         )}
       </div>
+
+      <DotacionStoreTable rows={m.by_store} />
 
       {m.stuck_open.length > 0 && (
         <div className="bg-card border border-[oklch(0.7_0.18_50)] rounded-2xl p-4">
@@ -1404,12 +1406,12 @@ function DashboardPanel() {
         <div className="grid lg:grid-cols-2 gap-4">
           <div className="bg-card rounded-2xl border border-border overflow-hidden">
             <div className="p-4 border-b border-border">
-              <h3 className="font-semibold text-foreground">Asistencia de hoy</h3>
-              <p className="text-xs text-muted-foreground">Quién ya marcó entrada</p>
+              <h3 className="font-semibold text-foreground">Dotación cubierta hoy</h3>
+              <p className="text-xs text-muted-foreground">Agentes presentes vs plan del día</p>
             </div>
             <div className="flex items-end gap-3 px-4 pt-4">
-              <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.attendance_pct}%</div>
-              <div className="text-sm text-muted-foreground pb-1">{m.present_today} de {m.employees_total} presentes · {m.inside_now} dentro</div>
+              <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.dotacion_today.pct}%</div>
+              <div className="text-sm text-muted-foreground pb-1">{m.dotacion_today.real} de {m.dotacion_today.plan} de la dotación · {m.inside_now} dentro</div>
             </div>
             <RoleTable rows={m.by_role} />
           </div>
@@ -1606,6 +1608,60 @@ function StoreExecTable({ title, subtitle, rows }: {
           </TableBody>
         </Table>
       </div>
+    </div>
+  );
+}
+
+function DotacionStoreTable({ rows }: {
+  rows: Array<{ id: string; code: string; name: string; dot_day_real: number; dot_day_plan: number; dot_week_real: number; dot_week_plan: number }>;
+}) {
+  const [view, setView] = useState<"day" | "week">("day");
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <h3 className="font-semibold text-foreground">Dotación real por tienda</h3>
+          <p className="text-xs text-muted-foreground">Agentes presentes (Productos + MBK) vs plan</p>
+        </div>
+        <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week")}>
+          <TabsList className="bg-secondary border border-border">
+            <TabsTrigger value="day" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Diaria</TabsTrigger>
+            <TabsTrigger value="week" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Semanal</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50">
+            <TableHead>Tienda</TableHead>
+            <TableHead className="text-right">Real</TableHead>
+            <TableHead className="text-right">Plan</TableHead>
+            <TableHead className="text-right">Cumplimiento</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow><TableCell colSpan={4} className="text-center py-6 text-muted-foreground">Sin tiendas.</TableCell></TableRow>
+            ) : rows.map((s) => {
+              const real = view === "day" ? s.dot_day_real : s.dot_week_real;
+              const plan = view === "day" ? s.dot_day_plan : s.dot_week_plan;
+              const pct = plan > 0 ? Math.round((real / plan) * 100) : 0;
+              return (
+                <TableRow key={s.id}>
+                  <TableCell><span className="font-mono text-foreground">{s.code}</span> <span className="text-muted-foreground">· {s.name}</span></TableCell>
+                  <TableCell className="text-right text-sm font-medium">{real}</TableCell>
+                  <TableCell className="text-right text-sm text-muted-foreground">{plan}</TableCell>
+                  <TableCell className={`text-right text-sm font-semibold ${pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{plan ? pct + "%" : "—"}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="px-4 py-2 text-[11px] text-muted-foreground border-t border-border">
+        {view === "day"
+          ? "Hoy: agentes distintos que marcaron entrada vs el plan del día."
+          : "Últimos 7 días: suma de agentes presentes por día vs la suma del plan diario."}
+      </p>
     </div>
   );
 }

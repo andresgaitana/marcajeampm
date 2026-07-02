@@ -59,17 +59,20 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
       effective = ids;
     }
-    const since = new Date();
-    since.setDate(since.getDate() - data.days);
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    // "Hoy" en hora de Nicaragua (UTC-6), no la del servidor.
+    const nowNI = new Date(Date.now() - NI_OFFSET_MS);
+    const todayStr = nowNI.toISOString().slice(0, 10);
+    const startOfTodayMs = new Date(todayStr + "T00:00:00Z").getTime() + NI_OFFSET_MS;
+    // Se traen al menos 7 días para poder calcular la dotación semanal.
+    const lookbackDays = Math.max(data.days, 7);
+    const since = new Date(Date.now() - lookbackDays * 24 * 3600 * 1000);
 
     let q = supabaseAdmin
       .from("attendance_records")
       .select("id, type, created_at, employee_id, store_id")
       .gte("created_at", since.toISOString())
       .order("created_at", { ascending: false })
-      .limit(5000);
+      .limit(8000);
     if (effective !== "all") q = q.in("store_id", effective);
     const { data: rows } = await q;
     const records = (rows ?? []) as Rec[];
@@ -81,7 +84,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     const stores = storesData ?? [];
 
     // Today metrics
-    const todayRecs = records.filter((r) => new Date(r.created_at) >= startOfToday);
+    const todayRecs = records.filter((r) => new Date(r.created_at).getTime() >= startOfTodayMs);
     const todayEntries = todayRecs.filter((r) => r.type === "entrada").length;
     const todayExits = todayRecs.filter((r) => r.type === "salida").length;
 
@@ -130,14 +133,14 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     // Weekly trend: day-by-day counts
     const trend: Array<{ date: string; entradas: number; salidas: number }> = [];
     for (let i = data.days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setHours(0, 0, 0, 0);
-      d.setDate(d.getDate() - i);
-      const next = new Date(d);
-      next.setDate(next.getDate() + 1);
+      const d = new Date(Date.now() - NI_OFFSET_MS);
+      d.setUTCHours(0, 0, 0, 0);
+      d.setUTCDate(d.getUTCDate() - i);
+      const startMs = d.getTime() + NI_OFFSET_MS;
+      const nextMs = startMs + 24 * 3600 * 1000;
       const dayRecs = records.filter((r) => {
         const t = new Date(r.created_at).getTime();
-        return t >= d.getTime() && t < next.getTime();
+        return t >= startMs && t < nextMs;
       });
       trend.push({
         date: d.toISOString().slice(0, 10),
@@ -174,10 +177,74 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     }
     const byRole = [...roleMap.values()].sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
 
+    // ---- DOTACIÓN: real (agentes operativos presentes) vs plan (presupuesto del día) ----
+    // Operativos = Productos (cajero) + MBK (agente_mbk); el plan sale de store_staffing.
+    const opRoleSet = new Set(["cajero", "agente_mbk"]);
+    const opEmpIds = new Set(employees.filter((e) => opRoleSet.has(e.role as string)).map((e) => e.id as string));
+    const { data: stf } = await supabaseAdmin.from("store_staffing").select("store_id, prod_agents, mbk_agents");
+    const staffMap = new Map((stf ?? []).map((x) => [x.store_id as string, x]));
+    const planTotalFor = (sid: string, dow: number) => {
+      const st = staffMap.get(sid);
+      const p = dotacionPlan(st?.prod_agents ?? 0, st?.mbk_agents ?? 0, dow);
+      return p.prodAm + p.prodPm + p.mbkAm + p.mbkPm;
+    };
+    // Últimos 7 días NI para la vista semanal.
+    const weekDayInfo: Array<{ date: string; dow: number }> = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - NI_OFFSET_MS);
+      d.setUTCDate(d.getUTCDate() - i);
+      weekDayInfo.push({ date: d.toISOString().slice(0, 10), dow: d.getUTCDay() });
+    }
+    const weekDaySet = new Set(weekDayInfo.map((w) => w.date));
+    const dowToday = new Date(todayStr + "T00:00:00Z").getUTCDay();
+
+    // Real diario por tienda: operativos DISTINTOS con entrada hoy.
+    const opTodayByStore = new Map<string, Set<string>>();
+    for (const r of todayRecs) {
+      if (r.type !== "entrada" || !opEmpIds.has(r.employee_id)) continue;
+      if (!opTodayByStore.has(r.store_id)) opTodayByStore.set(r.store_id, new Set());
+      opTodayByStore.get(r.store_id)!.add(r.employee_id);
+    }
+    // Real semanal: suma de operativos distintos presentes por día (7 días).
+    const opWeekByStoreDay = new Map<string, Map<string, Set<string>>>();
+    for (const r of records) {
+      if (r.type !== "entrada" || !opEmpIds.has(r.employee_id)) continue;
+      const ds = managuaParts(r.created_at).date;
+      if (!weekDaySet.has(ds)) continue;
+      if (!opWeekByStoreDay.has(r.store_id)) opWeekByStoreDay.set(r.store_id, new Map());
+      const dm = opWeekByStoreDay.get(r.store_id)!;
+      if (!dm.has(ds)) dm.set(ds, new Set());
+      dm.get(ds)!.add(r.employee_id);
+    }
+    const dotByStore = new Map<string, { dayReal: number; dayPlan: number; weekReal: number; weekPlan: number }>();
+    for (const s of stores) {
+      const dm = opWeekByStoreDay.get(s.id);
+      let weekReal = 0;
+      if (dm) for (const set of dm.values()) weekReal += set.size;
+      dotByStore.set(s.id, {
+        dayReal: opTodayByStore.get(s.id)?.size ?? 0,
+        dayPlan: planTotalFor(s.id, dowToday),
+        weekReal,
+        weekPlan: weekDayInfo.reduce((acc, w) => acc + planTotalFor(s.id, w.dow), 0),
+      });
+    }
+    const dotacionToday = { real: 0, plan: 0, pct: 0 };
+    const dotacionWeek = { real: 0, plan: 0, pct: 0 };
+    for (const v of dotByStore.values()) {
+      dotacionToday.real += v.dayReal; dotacionToday.plan += v.dayPlan;
+      dotacionWeek.real += v.weekReal; dotacionWeek.plan += v.weekPlan;
+    }
+    dotacionToday.pct = dotacionToday.plan > 0 ? Math.round((dotacionToday.real / dotacionToday.plan) * 100) : 0;
+    dotacionWeek.pct = dotacionWeek.plan > 0 ? Math.round((dotacionWeek.real / dotacionWeek.plan) * 100) : 0;
+
     const byStoreExec = byStore.map((s) => ({
       ...s,
       employees: empStoreMap.get(s.id)?.total ?? 0,
       present_today: empStoreMap.get(s.id)?.present ?? 0,
+      dot_day_real: dotByStore.get(s.id)?.dayReal ?? 0,
+      dot_day_plan: dotByStore.get(s.id)?.dayPlan ?? 0,
+      dot_week_real: dotByStore.get(s.id)?.weekReal ?? 0,
+      dot_week_plan: dotByStore.get(s.id)?.weekPlan ?? 0,
     }));
 
     // Agregado por zona (para super admin / operaciones)
@@ -231,6 +298,8 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       employees_total: employeesTotal,
       present_today: presentToday,
       attendance_pct: attendancePct,
+      dotacion_today: dotacionToday,
+      dotacion_week: dotacionWeek,
       by_role: byRole,
       by_zone: byZone,
       absent_today: absentToday,
