@@ -434,12 +434,16 @@ function EmployeesPanel() {
   const filter = useStoreFilter();
   const employees = (data ?? []).filter((e) => filter.matches(e.store_id));
   const storeList = stores ?? [];
+  // La seguridad tercerizada es cuenta rotativa compartida; el GZ no es de tienda.
+  const needsCedula = (role: string) => role !== "seguridad_tercerizada" && role !== "gerente_zona";
+  const missingCedula = employees.filter((e) => e.active && needsCedula(e.role) && !e.cedula);
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<(typeof employees)[number] | null>(null);
   const [form, setForm] = useState({
     employee_code: "",
     full_name: "",
+    cedula: "",
     role: "cajero" as EmployeeRole,
     store_id: "",
     pin: "",
@@ -453,6 +457,7 @@ function EmployeesPanel() {
       setForm({
         employee_code: editing.employee_code,
         full_name: editing.full_name,
+        cedula: editing.cedula ?? "",
         role: editing.role as EmployeeRole,
         store_id: editing.store_id ?? "",
         pin: "",
@@ -463,6 +468,7 @@ function EmployeesPanel() {
       setForm({
         employee_code: "",
         full_name: "",
+        cedula: "",
         role: "cajero",
         store_id: storeList[0]?.id ?? "",
         pin: "",
@@ -484,6 +490,7 @@ function EmployeesPanel() {
           data: {
             id: editing.id,
             full_name: form.full_name,
+            cedula: form.cedula,
             role: form.role,
             store_id: form.store_id,
             active: form.active,
@@ -503,6 +510,7 @@ function EmployeesPanel() {
           data: {
             employee_code: form.employee_code,
             full_name: form.full_name,
+            cedula: form.cedula,
             role: form.role,
             store_id: form.store_id,
             pin: form.pin,
@@ -577,6 +585,16 @@ function EmployeesPanel() {
                   onChange={(e) => setForm({ ...form, full_name: e.target.value })}
                 />
               </div>
+              {form.role !== "seguridad_tercerizada" && (
+                <div>
+                  <Label>Cédula</Label>
+                  <Input
+                    value={form.cedula}
+                    onChange={(e) => setForm({ ...form, cedula: e.target.value })}
+                    placeholder="Ej. 001-010190-0001A"
+                  />
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label>Rol</Label>
@@ -680,6 +698,30 @@ function EmployeesPanel() {
         </Dialog>
       </div>
 
+      {missingCedula.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-1 text-amber-800 font-semibold">
+            <AlertTriangle className="h-4 w-4" />
+            Actualización pendiente: cédula de colaboradores
+          </div>
+          <p className="text-sm text-amber-800">
+            {missingCedula.length} colaborador(es) sin cédula. Toca a cada uno para editarlo y agregar su cédula (Agentes y Gerentes de tienda).
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {missingCedula.slice(0, 40).map((e) => (
+              <button
+                key={e.id}
+                onClick={() => { setEditing(e); setOpen(true); }}
+                className="text-xs rounded-md border border-amber-300 bg-white text-amber-800 px-2 py-1 hover:bg-amber-100"
+              >
+                {e.full_name} <span className="font-mono opacity-70">{e.employee_code}</span>
+              </button>
+            ))}
+            {missingCedula.length > 40 && <span className="text-xs text-amber-700 self-center">+{missingCedula.length - 40} más</span>}
+          </div>
+        </div>
+      )}
+
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
         <Table>
           <TableHeader>
@@ -702,7 +744,14 @@ function EmployeesPanel() {
             ) : employees.map((e) => (
               <TableRow key={e.id}>
                 <TableCell className="font-mono text-foreground">{e.employee_code}</TableCell>
-                <TableCell className="font-medium text-foreground">{e.full_name}</TableCell>
+                <TableCell className="font-medium text-foreground">
+                  {e.full_name}
+                  {e.cedula ? (
+                    <div className="text-xs text-muted-foreground font-normal">CI: {e.cedula}</div>
+                  ) : needsCedula(e.role) && e.active ? (
+                    <div className="text-xs text-amber-700 font-normal">Sin cédula</div>
+                  ) : null}
+                </TableCell>
                 <TableCell className="text-muted-foreground">{ROLE_LABELS[e.role as EmployeeRole] ?? e.role}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {(() => {

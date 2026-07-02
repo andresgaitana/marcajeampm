@@ -160,6 +160,7 @@ export type Database = {
       employees: {
         Row: {
           active: boolean
+          cedula: string | null
           created_at: string
           employee_code: string
           face_descriptor: number[] | null
@@ -179,6 +180,7 @@ export type Database = {
         }
         Insert: {
           active?: boolean
+          cedula?: string | null
           created_at?: string
           employee_code: string
           face_descriptor?: number[] | null
@@ -198,6 +200,7 @@ export type Database = {
         }
         Update: {
           active?: boolean
+          cedula?: string | null
           created_at?: string
           employee_code?: string
           face_descriptor?: number[] | null

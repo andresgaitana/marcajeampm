@@ -94,7 +94,7 @@ export const listEmployees = createServerFn({ method: "GET" })
     const scope = await getScope(context.userId);
     let q = supabaseAdmin
       .from("employees")
-      .select("id, employee_code, full_name, role, store, store_id, active, username, created_at, must_change_pin, stores(code, name)")
+      .select("id, employee_code, full_name, cedula, role, store, store_id, active, username, created_at, must_change_pin, stores(code, name)")
       .order("created_at", { ascending: false });
     if (scope.storeIds !== "all") q = q.in("store_id", scope.storeIds);
     const { data, error } = await q;
@@ -105,6 +105,7 @@ export const listEmployees = createServerFn({ method: "GET" })
 const employeeInput = z.object({
   employee_code: z.string().trim().min(1).max(32).regex(/^[a-zA-Z0-9_-]+$/),
   full_name: z.string().trim().min(1).max(120),
+  cedula: z.string().trim().max(32).optional(),
   role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada"]),
   store_id: z.string().uuid(),
   pin: z.string().trim().regex(/^\d{4,8}$/, "PIN debe ser 4-8 dígitos"),
@@ -131,6 +132,7 @@ export const createEmployee = createServerFn({ method: "POST" })
     const { error } = await supabaseAdmin.from("employees").insert({
       employee_code: data.employee_code,
       full_name: data.full_name,
+      cedula: data.cedula?.trim() ? data.cedula.trim() : null,
       role: data.role,
       store_id: data.store_id,
       pin_hash: hashPin(data.pin),
@@ -321,6 +323,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       .object({
         id: z.string().uuid(),
         full_name: z.string().trim().min(1).max(120).optional(),
+        cedula: z.string().trim().max(32).optional(),
         role: z.enum(["cajero", "gerente", "seguridad", "agente_mbk", "gerente_zona", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada"]).optional(),
         store_id: z.string().uuid().optional(),
         active: z.boolean().optional(),
@@ -341,6 +344,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       throw new Error("No puedes mover el colaborador a esa tienda");
     const patch: {
       full_name?: string;
+      cedula?: string | null;
       role?: "cajero" | "gerente" | "seguridad" | "agente_mbk" | "gerente_zona" | "personal_limpieza" | "seguridad_interna" | "seguridad_tercerizada";
       store_id?: string;
       active?: boolean;
@@ -349,6 +353,7 @@ export const updateEmployee = createServerFn({ method: "POST" })
       face_enrolled_at?: string;
     } = {};
     if (data.full_name !== undefined) patch.full_name = data.full_name;
+    if (data.cedula !== undefined) patch.cedula = data.cedula.trim() ? data.cedula.trim() : null;
     if (data.role !== undefined) patch.role = data.role;
     if (data.store_id !== undefined) patch.store_id = data.store_id;
     if (data.active !== undefined) patch.active = data.active;
