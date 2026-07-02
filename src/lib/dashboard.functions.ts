@@ -177,18 +177,16 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     }
     const byRole = [...roleMap.values()].sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
 
-    // ---- DOTACIÓN: real (agentes operativos presentes) vs plan (presupuesto del día) ----
-    // Operativos = Productos (cajero) + MBK (agente_mbk); el plan sale de store_staffing.
-    const opRoleSet = new Set(["cajero", "agente_mbk"]);
-    const opEmpIds = new Set(employees.filter((e) => opRoleSet.has(e.role as string)).map((e) => e.id as string));
+    // ---- DOTACIÓN por ÁREA (Productos + MBK) y CORTE, como en la pestaña Dotación ----
+    // Objetivo: saber si la tienda está lista para operar el turno ACTUAL. Se separa
+    // Productos (cajero) y MBK (agente_mbk), cada uno con su corte y plan.
+    const roleById = new Map(employees.map((e) => [e.id as string, e.role as string]));
     const { data: stf } = await supabaseAdmin.from("store_staffing").select("store_id, prod_agents, mbk_agents");
     const staffMap = new Map((stf ?? []).map((x) => [x.store_id as string, x]));
-    const planTotalFor = (sid: string, dow: number) => {
+    const planFor = (sid: string, dow: number) => {
       const st = staffMap.get(sid);
-      const p = dotacionPlan(st?.prod_agents ?? 0, st?.mbk_agents ?? 0, dow);
-      return p.prodAm + p.prodPm + p.mbkAm + p.mbkPm;
+      return dotacionPlan(st?.prod_agents ?? 0, st?.mbk_agents ?? 0, dow);
     };
-    // Últimos 7 días NI para la vista semanal.
     const weekDayInfo: Array<{ date: string; dow: number }> = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(Date.now() - NI_OFFSET_MS);
@@ -197,55 +195,82 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     }
     const weekDaySet = new Set(weekDayInfo.map((w) => w.date));
     const dowToday = new Date(todayStr + "T00:00:00Z").getUTCDay();
+    const hourNow = nowNI.getUTCHours();
+    // Corte actual por área (mismas bandas que la pestaña Dotación: Prod AM 5-17, MBK AM 5-13).
+    const prodCorte: "AM" | "PM" = hourNow >= 5 && hourNow < 17 ? "AM" : "PM";
+    const mbkCorte: "AM" | "PM" = hourNow >= 5 && hourNow < 13 ? "AM" : "PM";
 
-    // Real diario por tienda: operativos DISTINTOS con entrada hoy.
-    const opTodayByStore = new Map<string, Set<string>>();
+    type Buck = { pAm: Set<string>; pPm: Set<string>; mAm: Set<string>; mPm: Set<string> };
+    const newBuck = (): Buck => ({ pAm: new Set(), pPm: new Set(), mAm: new Set(), mPm: new Set() });
+    const todayBuck = new Map<string, Buck>();
     for (const r of todayRecs) {
-      if (r.type !== "entrada" || !opEmpIds.has(r.employee_id)) continue;
-      if (!opTodayByStore.has(r.store_id)) opTodayByStore.set(r.store_id, new Set());
-      opTodayByStore.get(r.store_id)!.add(r.employee_id);
+      if (r.type !== "entrada") continue;
+      const role = roleById.get(r.employee_id);
+      if (role !== "cajero" && role !== "agente_mbk") continue;
+      const hour = managuaParts(r.created_at).hour;
+      if (!todayBuck.has(r.store_id)) todayBuck.set(r.store_id, newBuck());
+      const b = todayBuck.get(r.store_id)!;
+      if (role === "cajero") (hour >= 5 && hour < 17 ? b.pAm : b.pPm).add(r.employee_id);
+      else (hour >= 5 && hour < 13 ? b.mAm : b.mPm).add(r.employee_id);
     }
-    // Real semanal: suma de operativos distintos presentes por día (7 días).
-    const opWeekByStoreDay = new Map<string, Map<string, Set<string>>>();
+    // Semana: distintos por tienda/área/día (para sumar la cobertura de los 7 días).
+    const weekProd = new Map<string, Map<string, Set<string>>>();
+    const weekMbk = new Map<string, Map<string, Set<string>>>();
     for (const r of records) {
-      if (r.type !== "entrada" || !opEmpIds.has(r.employee_id)) continue;
+      if (r.type !== "entrada") continue;
+      const role = roleById.get(r.employee_id);
+      if (role !== "cajero" && role !== "agente_mbk") continue;
       const ds = managuaParts(r.created_at).date;
       if (!weekDaySet.has(ds)) continue;
-      if (!opWeekByStoreDay.has(r.store_id)) opWeekByStoreDay.set(r.store_id, new Map());
-      const dm = opWeekByStoreDay.get(r.store_id)!;
+      const target = role === "cajero" ? weekProd : weekMbk;
+      if (!target.has(r.store_id)) target.set(r.store_id, new Map());
+      const dm = target.get(r.store_id)!;
       if (!dm.has(ds)) dm.set(ds, new Set());
       dm.get(ds)!.add(r.employee_id);
     }
-    const dotByStore = new Map<string, { dayReal: number; dayPlan: number; weekReal: number; weekPlan: number }>();
+    const sumDistinct = (m: Map<string, Set<string>> | undefined) => {
+      let n = 0; if (m) for (const s of m.values()) n += s.size; return n;
+    };
+
+    const dotByStore = new Map<string, {
+      prodReal: number; prodPlan: number; mbkReal: number; mbkPlan: number;
+      wProdReal: number; wProdPlan: number; wMbkReal: number; wMbkPlan: number;
+    }>();
     for (const s of stores) {
-      const dm = opWeekByStoreDay.get(s.id);
-      let weekReal = 0;
-      if (dm) for (const set of dm.values()) weekReal += set.size;
+      const b = todayBuck.get(s.id) ?? newBuck();
+      const pl = planFor(s.id, dowToday);
       dotByStore.set(s.id, {
-        dayReal: opTodayByStore.get(s.id)?.size ?? 0,
-        dayPlan: planTotalFor(s.id, dowToday),
-        weekReal,
-        weekPlan: weekDayInfo.reduce((acc, w) => acc + planTotalFor(s.id, w.dow), 0),
+        prodReal: prodCorte === "AM" ? b.pAm.size : b.pPm.size,
+        prodPlan: prodCorte === "AM" ? pl.prodAm : pl.prodPm,
+        mbkReal: mbkCorte === "AM" ? b.mAm.size : b.mPm.size,
+        mbkPlan: mbkCorte === "AM" ? pl.mbkAm : pl.mbkPm,
+        wProdReal: sumDistinct(weekProd.get(s.id)),
+        wProdPlan: weekDayInfo.reduce((a, w) => { const p = planFor(s.id, w.dow); return a + p.prodAm + p.prodPm; }, 0),
+        wMbkReal: sumDistinct(weekMbk.get(s.id)),
+        wMbkPlan: weekDayInfo.reduce((a, w) => { const p = planFor(s.id, w.dow); return a + p.mbkAm + p.mbkPm; }, 0),
       });
     }
     const dotacionToday = { real: 0, plan: 0, pct: 0 };
     const dotacionWeek = { real: 0, plan: 0, pct: 0 };
     for (const v of dotByStore.values()) {
-      dotacionToday.real += v.dayReal; dotacionToday.plan += v.dayPlan;
-      dotacionWeek.real += v.weekReal; dotacionWeek.plan += v.weekPlan;
+      dotacionToday.real += v.prodReal + v.mbkReal; dotacionToday.plan += v.prodPlan + v.mbkPlan;
+      dotacionWeek.real += v.wProdReal + v.wMbkReal; dotacionWeek.plan += v.wProdPlan + v.wMbkPlan;
     }
     dotacionToday.pct = dotacionToday.plan > 0 ? Math.round((dotacionToday.real / dotacionToday.plan) * 100) : 0;
     dotacionWeek.pct = dotacionWeek.plan > 0 ? Math.round((dotacionWeek.real / dotacionWeek.plan) * 100) : 0;
 
-    const byStoreExec = byStore.map((s) => ({
-      ...s,
-      employees: empStoreMap.get(s.id)?.total ?? 0,
-      present_today: empStoreMap.get(s.id)?.present ?? 0,
-      dot_day_real: dotByStore.get(s.id)?.dayReal ?? 0,
-      dot_day_plan: dotByStore.get(s.id)?.dayPlan ?? 0,
-      dot_week_real: dotByStore.get(s.id)?.weekReal ?? 0,
-      dot_week_plan: dotByStore.get(s.id)?.weekPlan ?? 0,
-    }));
+    const byStoreExec = byStore.map((s) => {
+      const d = dotByStore.get(s.id);
+      return {
+        ...s,
+        employees: empStoreMap.get(s.id)?.total ?? 0,
+        present_today: empStoreMap.get(s.id)?.present ?? 0,
+        dot_prod_real: d?.prodReal ?? 0, dot_prod_plan: d?.prodPlan ?? 0,
+        dot_mbk_real: d?.mbkReal ?? 0, dot_mbk_plan: d?.mbkPlan ?? 0,
+        dot_wprod_real: d?.wProdReal ?? 0, dot_wprod_plan: d?.wProdPlan ?? 0,
+        dot_wmbk_real: d?.wMbkReal ?? 0, dot_wmbk_plan: d?.wMbkPlan ?? 0,
+      };
+    });
 
     // Agregado por zona (para super admin / operaciones)
     const zoneMap = new Map<string, {
@@ -300,6 +325,8 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       attendance_pct: attendancePct,
       dotacion_today: dotacionToday,
       dotacion_week: dotacionWeek,
+      prod_corte: prodCorte,
+      mbk_corte: mbkCorte,
       by_role: byRole,
       by_zone: byZone,
       absent_today: absentToday,

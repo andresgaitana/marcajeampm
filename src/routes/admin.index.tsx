@@ -1383,7 +1383,7 @@ function DashboardPanel() {
         )}
       </div>
 
-      <DotacionStoreTable rows={m.by_store} />
+      <DotacionStoreTable rows={m.by_store} prodCorte={m.prod_corte} mbkCorte={m.mbk_corte} />
 
       {m.stuck_open.length > 0 && (
         <div className="bg-card border border-[oklch(0.7_0.18_50)] rounded-2xl p-4">
@@ -1406,8 +1406,8 @@ function DashboardPanel() {
         <div className="grid lg:grid-cols-2 gap-4">
           <div className="bg-card rounded-2xl border border-border overflow-hidden">
             <div className="p-4 border-b border-border">
-              <h3 className="font-semibold text-foreground">Dotación cubierta hoy</h3>
-              <p className="text-xs text-muted-foreground">Agentes presentes vs plan del día</p>
+              <h3 className="font-semibold text-foreground">Dotación cubierta — turno actual</h3>
+              <p className="text-xs text-muted-foreground">Productos + MBK presentes vs plan del corte</p>
             </div>
             <div className="flex items-end gap-3 px-4 pt-4">
               <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.dotacion_today.pct}%</div>
@@ -1612,20 +1612,36 @@ function StoreExecTable({ title, subtitle, rows }: {
   );
 }
 
-function DotacionStoreTable({ rows }: {
-  rows: Array<{ id: string; code: string; name: string; dot_day_real: number; dot_day_plan: number; dot_week_real: number; dot_week_plan: number }>;
+function DotCoverCell({ real, plan }: { real: number; plan: number }) {
+  const ok = plan === 0 ? true : real >= plan;
+  return (
+    <span className={`text-sm font-medium ${plan === 0 ? "text-muted-foreground" : ok ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>
+      {real}/{plan}
+    </span>
+  );
+}
+
+function DotacionStoreTable({ rows, prodCorte, mbkCorte }: {
+  rows: Array<{ id: string; code: string; name: string;
+    dot_prod_real: number; dot_prod_plan: number; dot_mbk_real: number; dot_mbk_plan: number;
+    dot_wprod_real: number; dot_wprod_plan: number; dot_wmbk_real: number; dot_wmbk_plan: number }>;
+  prodCorte: string; mbkCorte: string;
 }) {
   const [view, setView] = useState<"day" | "week">("day");
+  const day = view === "day";
+  const corteLabel = prodCorte === mbkCorte ? `turno ${prodCorte}` : `Productos ${prodCorte} · MBK ${mbkCorte}`;
   return (
     <div className="bg-card rounded-2xl border border-border overflow-hidden">
       <div className="p-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
         <div className="min-w-0">
           <h3 className="font-semibold text-foreground">Dotación real por tienda</h3>
-          <p className="text-xs text-muted-foreground">Agentes presentes (Productos + MBK) vs plan</p>
+          <p className="text-xs text-muted-foreground">
+            {day ? `¿Lista para operar el ${corteLabel}? — Productos y MBK vs plan` : "Últimos 7 días — cobertura Productos y MBK vs plan"}
+          </p>
         </div>
         <Tabs value={view} onValueChange={(v) => setView(v as "day" | "week")}>
           <TabsList className="bg-secondary border border-border">
-            <TabsTrigger value="day" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Diaria</TabsTrigger>
+            <TabsTrigger value="day" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Turno actual</TabsTrigger>
             <TabsTrigger value="week" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">Semanal</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -1634,23 +1650,34 @@ function DotacionStoreTable({ rows }: {
         <Table>
           <TableHeader><TableRow className="bg-secondary/50">
             <TableHead>Tienda</TableHead>
-            <TableHead className="text-right">Real</TableHead>
-            <TableHead className="text-right">Plan</TableHead>
-            <TableHead className="text-right">Cumplimiento</TableHead>
+            <TableHead className="text-right">Productos</TableHead>
+            <TableHead className="text-right">MBK</TableHead>
+            <TableHead className="text-right">{day ? "Estado" : "Cumplimiento"}</TableHead>
           </TableRow></TableHeader>
           <TableBody>
             {rows.length === 0 ? (
               <TableRow><TableCell colSpan={4} className="text-center py-6 text-muted-foreground">Sin tiendas.</TableCell></TableRow>
             ) : rows.map((s) => {
-              const real = view === "day" ? s.dot_day_real : s.dot_week_real;
-              const plan = view === "day" ? s.dot_day_plan : s.dot_week_plan;
-              const pct = plan > 0 ? Math.round((real / plan) * 100) : 0;
+              const pReal = day ? s.dot_prod_real : s.dot_wprod_real;
+              const pPlan = day ? s.dot_prod_plan : s.dot_wprod_plan;
+              const mReal = day ? s.dot_mbk_real : s.dot_wmbk_real;
+              const mPlan = day ? s.dot_mbk_plan : s.dot_wmbk_plan;
+              const ready = pReal >= pPlan && mReal >= mPlan;
+              const pct = pPlan + mPlan > 0 ? Math.round(((pReal + mReal) / (pPlan + mPlan)) * 100) : 0;
               return (
                 <TableRow key={s.id}>
                   <TableCell><span className="font-mono text-foreground">{s.code}</span> <span className="text-muted-foreground">· {s.name}</span></TableCell>
-                  <TableCell className="text-right text-sm font-medium">{real}</TableCell>
-                  <TableCell className="text-right text-sm text-muted-foreground">{plan}</TableCell>
-                  <TableCell className={`text-right text-sm font-semibold ${pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{plan ? pct + "%" : "—"}</TableCell>
+                  <TableCell className="text-right"><DotCoverCell real={pReal} plan={pPlan} /></TableCell>
+                  <TableCell className="text-right"><DotCoverCell real={mReal} plan={mPlan} /></TableCell>
+                  <TableCell className="text-right">
+                    {day ? (
+                      <span className={`text-xs font-medium rounded-md border px-2 py-1 ${ready ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+                        {ready ? "Listo" : "Falta"}
+                      </span>
+                    ) : (
+                      <span className={`text-sm font-semibold ${pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{pct}%</span>
+                    )}
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -1658,9 +1685,9 @@ function DotacionStoreTable({ rows }: {
         </Table>
       </div>
       <p className="px-4 py-2 text-[11px] text-muted-foreground border-t border-border">
-        {view === "day"
-          ? "Hoy: agentes distintos que marcaron entrada vs el plan del día."
-          : "Últimos 7 días: suma de agentes presentes por día vs la suma del plan diario."}
+        {day
+          ? "Real/Plan del corte actual por área. Verde = cubierto, ámbar = falta. \"Listo\" solo si Productos y MBK están cubiertos."
+          : "Suma de agentes presentes por día (Productos y MBK) vs la suma del plan, en los últimos 7 días."}
       </p>
     </div>
   );
