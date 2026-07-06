@@ -82,8 +82,25 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+/** Error boundary del panel: si un panel lanza una excepción, muestra un aviso con
+ * botón de reintentar (y el mensaje del error) en vez de tumbar toda la página. */
+function AdminSectionError({ error, reset }: { error: Error; reset: () => void }) {
+  return (
+    <div className="max-w-lg mx-auto text-center py-16 px-4">
+      <AlertTriangle className="h-10 w-10 text-amber-600 mx-auto mb-3" />
+      <h2 className="text-lg font-bold text-foreground">No se pudo cargar esta sección</h2>
+      <p className="text-sm text-muted-foreground mt-1">
+        Ocurrió un error al mostrar los datos. Reintenta; si persiste, recarga la página completa.
+      </p>
+      <p className="text-xs text-muted-foreground/70 mt-3 font-mono break-words">{error?.message}</p>
+      <Button variant="outline" className="mt-4" onClick={() => reset()}>Reintentar</Button>
+    </div>
+  );
+}
+
 export const Route = createFileRoute("/admin/")({
   component: AdminDashboard,
+  errorComponent: AdminSectionError,
 });
 
 type EmployeeRole =
@@ -1417,7 +1434,7 @@ function DashboardPanel() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {isStore ? (
           <>
-            <KPI label="Dotación hoy" value={`${m.dotacion_today.real}/${m.dotacion_today.plan}`} sub={`${m.dotacion_today.pct}% cubierto`} accent="entry" />
+            <KPI label="Dotación hoy" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% cubierto`} accent="entry" />
             <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% del total`} accent="muted" />
             <KPI label="Dentro ahora" value={m.inside_now} accent="primary" />
             <KPI label="Entradas hoy" value={m.today_entries} accent="exit" />
@@ -1425,14 +1442,14 @@ function DashboardPanel() {
         ) : (
           <>
             <KPI label={isSuper ? "Tiendas" : "Tiendas (mi zona)"} value={m.stores_count} accent="primary" />
-            <KPI label="Dotación hoy" value={`${m.dotacion_today.real}/${m.dotacion_today.plan}`} sub={`${m.dotacion_today.pct}% cubierto`} accent="entry" />
+            <KPI label="Dotación hoy" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% cubierto`} accent="entry" />
             <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% del total`} accent="muted" />
             <KPI label="Dentro ahora" value={m.inside_now} accent="exit" />
           </>
         )}
       </div>
 
-      <DotacionStoreTable rows={m.by_store} prodCorte={m.prod_corte} mbkCorte={m.mbk_corte} />
+      <DotacionStoreTable rows={m.by_store} prodCorte={m.prod_corte ?? "AM"} mbkCorte={m.mbk_corte ?? "AM"} />
 
       {m.stuck_open.length > 0 && (
         <div className="bg-card border border-[oklch(0.7_0.18_50)] rounded-2xl p-4">
@@ -1459,8 +1476,8 @@ function DashboardPanel() {
               <p className="text-xs text-muted-foreground">Productos + MBK presentes vs plan del corte</p>
             </div>
             <div className="flex items-end gap-3 px-4 pt-4">
-              <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.dotacion_today.pct}%</div>
-              <div className="text-sm text-muted-foreground pb-1">{m.dotacion_today.real} de {m.dotacion_today.plan} de la dotación · {m.inside_now} dentro</div>
+              <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.dotacion_today?.pct ?? 0}%</div>
+              <div className="text-sm text-muted-foreground pb-1">{m.dotacion_today?.real ?? 0} de {m.dotacion_today?.plan ?? 0} de la dotación · {m.inside_now} dentro</div>
             </div>
             <RoleTable rows={m.by_role} />
           </div>
