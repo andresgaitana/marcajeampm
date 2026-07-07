@@ -35,38 +35,55 @@ function NotFoundComponent() {
   );
 }
 
+/** Recarga la página UNA vez (con guarda anti-bucle) para tomar la versión nueva
+ * cuando un chunk quedó obsoleto tras un despliegue. */
+function reloadForStaleChunk(): boolean {
+  if (typeof window === "undefined") return false;
+  const KEY = "app-chunk-reload";
+  const last = Number(sessionStorage.getItem(KEY) || "0");
+  if (Date.now() - last > 15000) {
+    sessionStorage.setItem(KEY, String(Date.now()));
+    window.location.reload();
+    return true;
+  }
+  return false;
+}
+const STALE_CHUNK_RE = /dynamically imported module|Loading chunk|Importing a module script failed|Failed to fetch/i;
+
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
   useEffect(() => {
     reportLovableError(error, { boundary: "tanstack_root_error_component" });
+    // Si el error es por un chunk obsoleto (despliegue nuevo), recargar solo.
+    if (STALE_CHUNK_RE.test(String(error?.message || ""))) reloadForStaleChunk();
   }, [error]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
         <h1 className="text-xl font-semibold tracking-tight text-foreground">
-          This page didn't load
+          No se pudo cargar la página
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Something went wrong on our end. You can try refreshing or head back home.
+          Ocurrió un error. Toca “Recargar” para obtener la versión más reciente.
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
+          <button
+            onClick={() => window.location.reload()}
+            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            Recargar
+          </button>
           <button
             onClick={() => {
               router.invalidate();
               reset();
             }}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            Try again
-          </button>
-          <a
-            href="/"
             className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
           >
-            Go home
-          </a>
+            Reintentar
+          </button>
         </div>
       </div>
     </div>
@@ -120,6 +137,22 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  useEffect(() => {
+    // Auto-recuperación de tablets con versión vieja en caché: si un módulo/chunk quedó
+    // obsoleto tras un despliegue nuevo, recargar una vez para tomar la versión actual.
+    const onPreload = (e: Event) => { e.preventDefault(); reloadForStaleChunk(); };
+    const onRejection = (e: PromiseRejectionEvent) => {
+      const msg = String((e?.reason as { message?: string })?.message ?? e?.reason ?? "");
+      if (STALE_CHUNK_RE.test(msg)) reloadForStaleChunk();
+    };
+    window.addEventListener("vite:preloadError", onPreload);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("vite:preloadError", onPreload);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
