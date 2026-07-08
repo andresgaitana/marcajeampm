@@ -51,6 +51,36 @@ function effectiveArea(recArea: string | null | undefined, role: string | undefi
   return null;
 }
 
+// ── Clasificación del HORARIO (quién marcó) por categoría de personal ──
+type SchedCat = "PROD" | "MBK" | "GT" | "LIMP" | "SEG" | "TERC";
+/** Categoría del horario según el rol (y el área marcada, para polivalentes/cobertura).
+ * gerente_zona y otros roles no-tienda quedan fuera del roster (null). */
+function scheduleArea(role: string, recArea: string | null | undefined): SchedCat | null {
+  if (role === "cajero" || role === "agente_mbk") return effectiveArea(recArea, role) === "mbk" ? "MBK" : "PROD";
+  if (role === "gerente") return "GT";
+  if (role === "personal_limpieza") return "LIMP";
+  if (role === "seguridad_interna" || role === "seguridad") return "SEG";
+  if (role === "seguridad_tercerizada") return "TERC";
+  return null;
+}
+/** Turno AM/PM por hora local NI de ENTRADA. MBK corta a las 13:00; el resto a las 17:00. */
+function scheduleShift(cat: SchedCat, hour: number): "AM" | "PM" {
+  return cat === "MBK" ? (hour >= 5 && hour < 13 ? "AM" : "PM") : (hour >= 5 && hour < 17 ? "AM" : "PM");
+}
+/** Filas del horario general (excluye Tercerizada, que va en su propio documento). */
+const SCHED_ROW_DEFS = [
+  { key: "PROD_AM", cat: "PROD" as SchedCat, shift: "AM" as const, label: "Productos AM · 6:00-18:00" },
+  { key: "PROD_PM", cat: "PROD" as SchedCat, shift: "PM" as const, label: "Productos PM · 18:00-6:00" },
+  { key: "MBK_AM", cat: "MBK" as SchedCat, shift: "AM" as const, label: "MBK AM · 6:00-14:00" },
+  { key: "MBK_PM", cat: "MBK" as SchedCat, shift: "PM" as const, label: "MBK PM · 14:00-22:00" },
+  { key: "GT_AM", cat: "GT" as SchedCat, shift: "AM" as const, label: "Gerente de Tienda AM" },
+  { key: "GT_PM", cat: "GT" as SchedCat, shift: "PM" as const, label: "Gerente de Tienda PM" },
+  { key: "LIMP_AM", cat: "LIMP" as SchedCat, shift: "AM" as const, label: "Limpieza AM" },
+  { key: "LIMP_PM", cat: "LIMP" as SchedCat, shift: "PM" as const, label: "Limpieza PM" },
+  { key: "SEG_AM", cat: "SEG" as SchedCat, shift: "AM" as const, label: "Seguridad interna AM" },
+  { key: "SEG_PM", cat: "SEG" as SchedCat, shift: "PM" as const, label: "Seguridad interna PM" },
+] as const;
+
 export const getDashboardMetrics = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) =>
@@ -538,6 +568,10 @@ export const exportAttendance = createServerFn({ method: "POST" })
   .inputValidator((i) =>
     z.object({
       days: z.number().int().min(1).max(366).default(30),
+      // Rango explícito (fechas locales NI, yyyy-mm-dd). Si vienen ambos, tienen
+      // prioridad sobre `days`. El rango es inclusivo en ambos extremos.
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       storeId: z.string().uuid().optional(),
       zoneId: z.string().uuid().optional(),
     }).parse(i ?? {}),
@@ -553,14 +587,27 @@ export const exportAttendance = createServerFn({ method: "POST" })
       if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
       effective = ids;
     }
-    const since = new Date();
-    since.setDate(since.getDate() - data.days);
+    // Ventana: con from/to (fechas locales NI) se usa [from 00:00, to+1 00:00);
+    // si no, la ventana de los últimos `days` días hasta ahora.
+    let fromISO: string;
+    let toISO: string | null = null;
+    if (data.from && data.to) {
+      const a = data.from <= data.to ? data.from : data.to;
+      const b = data.from <= data.to ? data.to : data.from;
+      fromISO = new Date(new Date(a + "T00:00:00Z").getTime() + NI_OFFSET_MS).toISOString();
+      toISO = new Date(new Date(b + "T00:00:00Z").getTime() + NI_OFFSET_MS + 24 * 3600 * 1000).toISOString();
+    } else {
+      const since = new Date();
+      since.setDate(since.getDate() - data.days);
+      fromISO = since.toISOString();
+    }
     let q = supabaseAdmin
       .from("attendance_records")
-      .select("created_at, type, location_valid, employee:employees!employee_id(full_name, employee_code, role), store:stores(code, name)")
-      .gte("created_at", since.toISOString())
+      .select("created_at, type, location_valid, employee:employees!employee_id(full_name, employee_code, cedula, role), store:stores(code, name)")
+      .gte("created_at", fromISO)
       .order("created_at", { ascending: false })
       .limit(20000);
+    if (toISO) q = q.lt("created_at", toISO);
     if (effective !== "all") q = q.in("store_id", effective);
     const { data: rows, error } = await q;
     if (error) throw new Error(error.message);
@@ -573,6 +620,7 @@ export const exportAttendance = createServerFn({ method: "POST" })
         fecha: local.toISOString().slice(0, 10),
         hora: local.toISOString().slice(11, 16),
         codigo: e?.employee_code ?? "",
+        cedula: e?.cedula ?? "",
         nombre: e?.full_name ?? "",
         rol: e?.role ?? "",
         tienda: s ? `${s.code} · ${s.name}` : "",
@@ -624,7 +672,7 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
 
     const { data: rows } = await supabaseAdmin
       .from("attendance_records")
-      .select("created_at, notes, employee:employees!employee_id(id, full_name, role)")
+      .select("created_at, notes, area, employee:employees!employee_id(id, full_name, role)")
       .eq("store_id", data.storeId)
       .eq("type", "entrada")
       .gte("created_at", fromUTC.toISOString())
@@ -643,16 +691,12 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
     });
     const dayIndex = new Map(days.map((d, i) => [d.date, i] as const));
 
+    // Pantalla: filas generales (Productos, MBK, GT, Limpieza, Seguridad) + Tercerizada.
     const rowDefs = [
-      { key: "PROD_AM", area: "Productos", shift: "AM", label: "Productos AM · 6:00-18:00" },
-      { key: "PROD_PM", area: "Productos", shift: "PM", label: "Productos PM · 18:00-6:00" },
-      { key: "MBK_AM", area: "MBK", shift: "AM", label: "MBK AM · 6:00-14:00" },
-      { key: "MBK_PM", area: "MBK", shift: "PM", label: "MBK PM · 14:00-22:00" },
-      { key: "INT_AM", area: "Limpieza y Seg. Interna", shift: "AM", label: "Limpieza y Seg. Interna AM · 6:00-18:00" },
-      { key: "INT_PM", area: "Limpieza y Seg. Interna", shift: "PM", label: "Limpieza y Seg. Interna PM · 18:00-6:00" },
-      { key: "TERC_AM", area: "Seguridad Tercerizada", shift: "AM", label: "Seguridad Tercerizada AM · 6:00-18:00" },
-      { key: "TERC_PM", area: "Seguridad Tercerizada", shift: "PM", label: "Seguridad Tercerizada PM · 18:00-6:00" },
-    ] as const;
+      ...SCHED_ROW_DEFS,
+      { key: "TERC_AM", cat: "TERC" as SchedCat, shift: "AM" as const, label: "Seguridad Tercerizada AM" },
+      { key: "TERC_PM", cat: "TERC" as SchedCat, shift: "PM" as const, label: "Seguridad Tercerizada PM" },
+    ];
     // Dedup por colaborador (id), no por nombre, para no colapsar homónimos.
     const buckets: Record<string, Array<Map<string, string>>> = {};
     for (const r of rowDefs) buckets[r.key] = days.map(() => new Map<string, string>());
@@ -663,24 +707,15 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
       const { date, hour } = managuaParts(rec.created_at as string);
       const di = dayIndex.get(date);
       if (di === undefined) continue;
-      const role = emp.role as string;
-      const area =
-        role === "agente_mbk" ? "MBK"
-          : role === "personal_limpieza" || role === "seguridad_interna" ? "INT"
-            : role === "seguridad_tercerizada" ? "TERC"
-              : "PROD";
-      // Clasificación por hora de ENTRADA con tolerancia de ~1h de llegada temprana:
-      // Productos AM (Día) = 5:00-17:00, PM (Noche) = resto.
-      // MBK AM = 5:00-13:00 (el turno de tarde entra ~13:30-14:00 → PM), PM = resto.
-      const shift: "AM" | "PM" = area === "MBK"
-        ? (hour >= 5 && hour < 13 ? "AM" : "PM")
-        : (hour >= 5 && hour < 17 ? "AM" : "PM");
-      const key = `${area}_${shift}`;
+      const cat = scheduleArea(emp.role as string, rec.area as string | null);
+      if (!cat) continue; // gerente_zona u otros: fuera del roster
+      const shift = scheduleShift(cat, hour);
+      const key = `${cat}_${shift}`;
       // Para Seguridad Tercerizada (usuario compartido) agrupamos por NOMBRE del
       // guarda capturado en el marcaje, no por el usuario; así se ven los distintos.
       let identity = emp.id as string;
       let display = (emp.full_name as string) ?? "—";
-      if (area === "TERC") {
+      if (cat === "TERC") {
         const gn = guardNameFromNotes(rec.notes as string | null);
         if (gn) { identity = `g:${gn.toLowerCase()}`; display = gn; }
       }
@@ -689,7 +724,7 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
 
     const gridRows = rowDefs.map((r) => ({
       key: r.key,
-      area: r.area,
+      area: r.cat,
       shift: r.shift,
       label: r.label,
       cells: buckets[r.key].map((m, i) => ({
@@ -699,6 +734,160 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
     }));
 
     return { weekStart: days[0].date, weekEnd: days[6].date, days, rows: gridRows };
+  });
+
+/**
+ * Horario para IMPRIMIR/descargar: una o varias semanas de UNA tienda. Devuelve, por
+ * semana, (a) las filas generales del roster (Productos, MBK, GT, Limpieza, Seguridad
+ * interna) con quién marcó ENTRADA por día/turno, y (b) el detalle de la Seguridad
+ * Tercerizada (entrada/salida y horas por guarda) para verificar cumplimiento/asistencia.
+ */
+export const getSchedulePrint = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid(),
+      weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      weeks: z.number().int().min(1).max(8).default(1),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    if (scope.storeIds !== "all" && !scope.storeIds.includes(data.storeId))
+      throw new Error("Sin acceso a esta tienda");
+
+    const { data: store } = await supabaseAdmin
+      .from("stores").select("code, name").eq("id", data.storeId).maybeSingle();
+
+    // Lunes 00:00 NI de la semana inicial (misma lógica que getWeeklySchedule).
+    let mondayLocal: Date;
+    if (data.weekStart) {
+      mondayLocal = new Date(data.weekStart + "T00:00:00Z");
+      const dow = (mondayLocal.getUTCDay() + 6) % 7;
+      if (dow !== 0) mondayLocal.setUTCDate(mondayLocal.getUTCDate() - dow);
+    } else {
+      const nowLocal = new Date(Date.now() - NI_OFFSET_MS);
+      const dow = (nowLocal.getUTCDay() + 6) % 7;
+      mondayLocal = new Date(nowLocal);
+      mondayLocal.setUTCHours(0, 0, 0, 0);
+      mondayLocal.setUTCDate(mondayLocal.getUTCDate() - dow);
+    }
+    const totalDays = data.weeks * 7;
+    const SHIFT_MAX = 14 * 3600 * 1000;
+    const fromUTC = new Date(mondayLocal.getTime() + NI_OFFSET_MS);
+    const toUTC = new Date(fromUTC.getTime() + totalDays * 24 * 3600 * 1000);
+    // Buffer de ±14h para capturar turnos nocturnos que cruzan los bordes del rango
+    // (p.ej. entra domingo 18:00 y sale lunes 06:00): se parean y luego se filtran por
+    // el día de ENTRADA, así solo cuentan los que arrancan dentro del rango impreso.
+    const fromBufUTC = new Date(fromUTC.getTime() - SHIFT_MAX);
+    const toBufUTC = new Date(toUTC.getTime() + SHIFT_MAX);
+
+    // Entradas Y salidas (la salida se usa para las horas de los tercerizados).
+    const { data: rows } = await supabaseAdmin
+      .from("attendance_records")
+      .select("created_at, type, notes, area, employee:employees!employee_id(id, full_name, role)")
+      .eq("store_id", data.storeId)
+      .gte("created_at", fromBufUTC.toISOString())
+      .lt("created_at", toBufUTC.toISOString())
+      .order("created_at", { ascending: true })
+      .limit(20000);
+
+    const allDays = Array.from({ length: totalDays }, (_, i) => {
+      const d = new Date(mondayLocal.getTime() + i * 24 * 3600 * 1000);
+      return { date: d.toISOString().slice(0, 10), label: DOW_ES[d.getUTCDay()], dayNum: `${d.getUTCDate()}/${d.getUTCMonth() + 1}` };
+    });
+    const dateToGi = new Map(allDays.map((d, i) => [d.date, i] as const));
+
+    // Generales: weekGeneral[w][`${rowKey}|${dayInWeek}`] = Map<id, nombre>
+    const weekGeneral = Array.from({ length: data.weeks }, () => {
+      const b: Record<string, Map<string, string>> = {};
+      for (const rd of SCHED_ROW_DEFS) for (let di = 0; di < 7; di++) b[`${rd.key}|${di}`] = new Map();
+      return b;
+    });
+    // Tercerizados: TODOS los eventos (entrada/salida) del rango con buffer en una sola
+    // lista; se parean globalmente por guarda para no partir turnos que cruzan semanas.
+    type TercEv = { type: "entrada" | "salida"; ms: number; name: string };
+    const tercEvents: TercEv[] = [];
+
+    for (const rec of rows ?? []) {
+      const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
+      if (!emp) continue;
+      const cat = scheduleArea(emp.role as string, rec.area as string | null);
+      if (!cat) continue;
+      if (cat === "TERC") {
+        // Nombre del guarda desde las notas (cuenta compartida). Si no hay nombre, cae
+        // al usuario compartido; el marcaje exige el nombre, así que es poco común.
+        const gn = guardNameFromNotes(rec.notes as string | null) ?? (emp.full_name as string) ?? "Guarda";
+        tercEvents.push({ type: rec.type as "entrada" | "salida", ms: new Date(rec.created_at as string).getTime(), name: gn });
+        continue;
+      }
+      // Generales: solo ENTRADA y solo dentro del rango impreso (el buffer no cuenta).
+      if (rec.type !== "entrada") continue;
+      const { date, hour } = managuaParts(rec.created_at as string);
+      const gi = dateToGi.get(date);
+      if (gi === undefined) continue;
+      const shift = scheduleShift(cat, hour);
+      weekGeneral[Math.floor(gi / 7)][`${cat}_${shift}|${gi % 7}`]?.set(emp.id as string, (emp.full_name as string) ?? "—");
+    }
+
+    // Pareo GLOBAL de tercerizados por guarda (cruza medianoche y semanas). Cada turno
+    // se ancla al día de su ENTRADA; solo se conservan los anclados dentro del rango.
+    type TercShift = { name: string; entrada: string | null; salida: string | null; horas: number | null };
+    const shiftsByDate = new Map<string, TercShift[]>();
+    const byGuard = new Map<string, TercEv[]>();
+    for (const ev of tercEvents) {
+      if (!byGuard.has(ev.name)) byGuard.set(ev.name, []);
+      byGuard.get(ev.name)!.push(ev);
+    }
+    const keepShift = (s: TercShift) => {
+      const anchor = s.entrada ?? s.salida!;
+      const dstr = managuaParts(anchor).date;
+      if (!dateToGi.has(dstr)) return; // arrancó fuera del rango impreso → no cuenta
+      if (!shiftsByDate.has(dstr)) shiftsByDate.set(dstr, []);
+      shiftsByDate.get(dstr)!.push(s);
+    };
+    for (const [name, list] of byGuard) {
+      list.sort((a, b) => a.ms - b.ms);
+      let open: TercEv | null = null;
+      for (const ev of list) {
+        if (ev.type === "entrada") {
+          if (open) keepShift({ name, entrada: new Date(open.ms).toISOString(), salida: null, horas: null });
+          open = ev;
+        } else if (open && ev.ms - open.ms <= SHIFT_MAX) {
+          keepShift({ name, entrada: new Date(open.ms).toISOString(), salida: new Date(ev.ms).toISOString(), horas: Math.round(((ev.ms - open.ms) / 3600000) * 10) / 10 });
+          open = null;
+        } else {
+          keepShift({ name, entrada: null, salida: new Date(ev.ms).toISOString(), horas: null });
+        }
+      }
+      if (open) keepShift({ name, entrada: new Date(open.ms).toISOString(), salida: null, horas: null });
+    }
+
+    const out = Array.from({ length: data.weeks }, (_, w) => {
+      const wdays = allDays.slice(w * 7, w * 7 + 7);
+      const genRows = SCHED_ROW_DEFS.map((rd) => ({
+        key: rd.key,
+        label: rd.label,
+        cells: wdays.map((d, di) => ({
+          date: d.date,
+          people: [...(weekGeneral[w][`${rd.key}|${di}`] ?? new Map()).entries()].map(([id, name]) => ({ id, name })),
+        })),
+      }));
+      const terc = wdays.map((d) => ({
+        date: d.date,
+        label: d.label,
+        dayNum: d.dayNum,
+        shifts: (shiftsByDate.get(d.date) ?? []).slice().sort((a, b) => (a.entrada ?? a.salida ?? "").localeCompare(b.entrada ?? b.salida ?? "")),
+      }));
+      return { weekStart: wdays[0].date, weekEnd: wdays[6].date, days: wdays, rows: genRows, terc };
+    });
+
+    return {
+      store: { code: store?.code ?? "", name: store?.name ?? "" },
+      weekStart: allDays[0].date,
+      weekEnd: allDays[totalDays - 1].date,
+      weeks: out,
+    };
   });
 
 /** Plan de dotación (agentes esperados por turno) según # de agentes y día de semana (0=Dom..6=Sáb). */

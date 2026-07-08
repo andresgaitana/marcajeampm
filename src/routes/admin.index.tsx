@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport } from "@/lib/dashboard.functions";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -1388,19 +1388,102 @@ const SCHEDULE_ROW_STYLES: Record<string, { label: string; chip: string }> = {
   PROD_PM: { label: "text-blue-700", chip: "bg-blue-100 text-blue-900 border-blue-200" },
   MBK_AM: { label: "text-orange-700", chip: "bg-orange-100 text-orange-900 border-orange-200" },
   MBK_PM: { label: "text-sky-700", chip: "bg-sky-100 text-sky-900 border-sky-200" },
-  INT_AM: { label: "text-teal-700", chip: "bg-teal-100 text-teal-900 border-teal-200" },
-  INT_PM: { label: "text-emerald-700", chip: "bg-emerald-100 text-emerald-900 border-emerald-200" },
+  GT_AM: { label: "text-indigo-700", chip: "bg-indigo-100 text-indigo-900 border-indigo-200" },
+  GT_PM: { label: "text-violet-700", chip: "bg-violet-100 text-violet-900 border-violet-200" },
+  LIMP_AM: { label: "text-teal-700", chip: "bg-teal-100 text-teal-900 border-teal-200" },
+  LIMP_PM: { label: "text-emerald-700", chip: "bg-emerald-100 text-emerald-900 border-emerald-200" },
+  SEG_AM: { label: "text-rose-700", chip: "bg-rose-100 text-rose-900 border-rose-200" },
+  SEG_PM: { label: "text-red-700", chip: "bg-red-100 text-red-900 border-red-200" },
   TERC_AM: { label: "text-purple-700", chip: "bg-purple-100 text-purple-900 border-purple-200" },
   TERC_PM: { label: "text-fuchsia-700", chip: "bg-fuchsia-100 text-fuchsia-900 border-fuchsia-200" },
 };
 
+// ── Impresión del horario (documento para descargar / imprimir a PDF) ──
+function escHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
+// Escribe el documento en una ventana YA abierta (se abre sincrónicamente en el
+// gesto del usuario, antes del await, para que el bloqueador de popups no la corte).
+function openPrintDoc(win: Window, title: string, innerHtml: string) {
+  const css = `
+    body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:24px}
+    h1{font-size:18px;margin:0 0 2px;color:#E8622A}
+    .sub{color:#555;font-size:12px;margin:0 0 16px}
+    h3{font-size:14px;margin:18px 0 6px;border-bottom:2px solid #E8622A;padding-bottom:2px}
+    h4{font-size:12px;margin:10px 0 4px;color:#20303B}
+    table{border-collapse:collapse;width:100%;font-size:11px;margin-bottom:8px}
+    th,td{border:1px solid #ccc;padding:4px 6px;text-align:left;vertical-align:top}
+    th{background:#f2f2f2}
+    .rl{font-weight:bold;white-space:nowrap}
+    .dn{font-weight:normal;color:#888}
+    .p{white-space:nowrap}
+    .dash{color:#aaa}
+    .pb{page-break-after:always}
+    @media print{body{margin:0}}
+  `;
+  win.document.open();
+  win.document.write(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title><style>${css}</style></head>` +
+    `<body>${innerHtml}<script>window.onload=function(){setTimeout(function(){window.print()},350)}<\/script></body></html>`,
+  );
+  win.document.close();
+}
+type PrintDay = { date: string; label: string; dayNum: string };
+type PrintRow = { key: string; label: string; cells: Array<{ date: string; people: Array<{ id: string; name: string }> }> };
+type PrintTercShift = { name: string; entrada: string | null; salida: string | null; horas: number | null };
+type PrintTercDay = { date: string; label: string; dayNum: string; shifts: PrintTercShift[] };
+type PrintWeek = { weekStart: string; weekEnd: string; days: PrintDay[]; rows: PrintRow[]; terc: PrintTercDay[] };
+type SchedulePrintData = { store: { code: string; name: string }; weekStart: string; weekEnd: string; weeks: PrintWeek[] };
+
+function buildSchedulePrintHtml(data: SchedulePrintData): string {
+  const week = (w: PrintWeek) => {
+    const heads = w.days.map((d) => `<th>${d.label}<br><span class="dn">${d.dayNum}</span></th>`).join("");
+    const body = w.rows.map((r) => {
+      const cells = r.cells.map((c) =>
+        `<td>${c.people.length ? c.people.map((p) => `<div class="p">${escHtml(p.name)}</div>`).join("") : '<span class="dash">—</span>'}</td>`,
+      ).join("");
+      return `<tr><td class="rl">${escHtml(r.label)}</td>${cells}</tr>`;
+    }).join("");
+    return `<h3>Semana del ${fmtDM(w.weekStart)} al ${fmtDM(w.weekEnd)}</h3>` +
+      `<table><thead><tr><th class="rl">Turno</th>${heads}</tr></thead><tbody>${body}</tbody></table>`;
+  };
+  return `<h1>Horario — ${escHtml(data.store.code)} ${escHtml(data.store.name)}</h1>` +
+    `<p class="sub">Del ${fmtDM(data.weekStart)} al ${fmtDM(data.weekEnd)} · Productos, MBK, Gerente de Tienda, Limpieza y Seguridad interna. ` +
+    `Refleja quién marcó ENTRADA por turno (hora de Nicaragua).</p>` +
+    data.weeks.map((w, i) => week(w) + (i < data.weeks.length - 1 ? '<div class="pb"></div>' : "")).join("");
+}
+function buildTercPrintHtml(data: SchedulePrintData): string {
+  const hhmm = (iso: string | null) => (iso ? new Date(new Date(iso).getTime() - 6 * 3600 * 1000).toISOString().slice(11, 16) : "—");
+  const week = (w: PrintWeek) => {
+    const blocks = w.terc.map((d) => {
+      const body = d.shifts.length
+        ? d.shifts.map((s) =>
+            `<tr><td>${escHtml(s.name)}</td><td>${hhmm(s.entrada)}</td><td>${hhmm(s.salida)}</td>` +
+            `<td>${s.horas != null ? s.horas : "—"}</td>` +
+            `<td>${s.salida ? "OK" : s.entrada ? "Sin salida" : "Sin entrada"}</td></tr>`,
+          ).join("")
+        : '<tr><td colspan="5" class="dash">Sin marcaje registrado</td></tr>';
+      return `<div><h4>${d.label} ${d.dayNum}</h4>` +
+        `<table><thead><tr><th>Guarda</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Estado</th></tr></thead><tbody>${body}</tbody></table></div>`;
+    }).join("");
+    return `<h3>Semana del ${fmtDM(w.weekStart)} al ${fmtDM(w.weekEnd)}</h3>${blocks}`;
+  };
+  return `<h1>Seguridad Tercerizada — ${escHtml(data.store.code)} ${escHtml(data.store.name)}</h1>` +
+    `<p class="sub">Asistencia y cumplimiento del guarda tercerizado (entrada/salida y horas por día). ` +
+    `Del ${fmtDM(data.weekStart)} al ${fmtDM(data.weekEnd)}.</p>` +
+    data.weeks.map((w, i) => week(w) + (i < data.weeks.length - 1 ? '<div class="pb"></div>' : "")).join("");
+}
+
 function WeeklySchedulePanel() {
   const scheduleFn = useServerFn(getWeeklySchedule);
+  const printFn = useServerFn(getSchedulePrint);
   const storesFn = useServerFn(listStores);
   const { data: stores, isLoading: storesLoading } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
   const storeList = stores ?? [];
   const [storeId, setStoreId] = useState<string>("");
   const [weekStart, setWeekStart] = useState<string | undefined>(undefined);
+  const [weeks, setWeeks] = useState(1); // semanas a imprimir (hacia atrás desde la mostrada)
+  const [printing, setPrinting] = useState(false);
 
   useEffect(() => {
     if (!storeId && storeList.length > 0) setStoreId(storeList[0].id);
@@ -1411,6 +1494,31 @@ function WeeklySchedulePanel() {
     queryFn: () => scheduleFn({ data: { storeId, ...(weekStart ? { weekStart } : {}) } }),
     enabled: !!storeId,
   });
+
+  // Imprime N semanas TERMINANDO en la semana mostrada (las últimas N semanas).
+  const doPrint = async (kind: "general" | "terc") => {
+    if (!storeId || !data) return;
+    // Abrir la ventana YA (en el gesto de clic) para que no la bloquee el navegador;
+    // se llena tras el await con el documento generado.
+    const win = window.open("", "_blank");
+    if (!win) {
+      toast.error("Habilita las ventanas emergentes para poder imprimir/descargar.");
+      return;
+    }
+    win.document.write('<!doctype html><meta charset="utf-8"><title>Generando…</title><body style="font-family:Arial;padding:24px;color:#555">Generando documento…</body>');
+    setPrinting(true);
+    try {
+      const startWeek = addDaysISO(data.weekStart, -(weeks - 1) * 7); // lunes de la 1ª semana
+      const res = await printFn({ data: { storeId, weeks, weekStart: startWeek } });
+      if (kind === "general") openPrintDoc(win, `Horario ${res.store.code}`, buildSchedulePrintHtml(res));
+      else openPrintDoc(win, `Tercerizados ${res.store.code}`, buildTercPrintHtml(res));
+    } catch (e: unknown) {
+      win.close();
+      toast.error(e instanceof Error ? e.message : "Error al generar el documento");
+    } finally {
+      setPrinting(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -1445,6 +1553,40 @@ function WeeklySchedulePanel() {
             Semana siguiente →
           </Button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary/30 px-3 py-2">
+        <span className="text-sm font-medium text-foreground">Descargar / imprimir:</span>
+        <Select value={String(weeks)} onValueChange={(v) => setWeeks(Number(v))}>
+          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="1">1 semana</SelectItem>
+            <SelectItem value="2">2 semanas</SelectItem>
+            <SelectItem value="3">3 semanas</SelectItem>
+            <SelectItem value="4">4 semanas</SelectItem>
+            <SelectItem value="6">6 semanas</SelectItem>
+            <SelectItem value="8">8 semanas</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          className="bg-accent text-accent-foreground hover:bg-accent/90"
+          disabled={!storeId || !data || printing}
+          onClick={() => doPrint("general")}
+          title="Horario de Productos, MBK, GT, Limpieza y Seguridad interna"
+        >
+          <Download className="h-4 w-4 mr-1" /> {printing ? "Generando…" : "Horario general"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!storeId || !data || printing}
+          onClick={() => doPrint("terc")}
+          title="Asistencia y cumplimiento del guarda tercerizado (entrada/salida y horas)"
+        >
+          <ShieldCheck className="h-4 w-4 mr-1" /> Seguridad tercerizada
+        </Button>
+        <span className="text-xs text-muted-foreground w-full sm:w-auto">Toma las últimas N semanas hasta la mostrada. Se abre una vista lista para imprimir o guardar como PDF.</span>
       </div>
 
       <div className="bg-card rounded-2xl border border-border overflow-x-auto">
@@ -1492,8 +1634,9 @@ function WeeklySchedulePanel() {
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        El turno AM/PM se calcula por la hora de <strong>entrada</strong> (hora de Nicaragua). Área: Agente MBK → MBK; los demás roles → Productos.
-        Este horario es de solo lectura (refleja marcajes reales), no es planificación.
+        El turno AM/PM se calcula por la hora de <strong>entrada</strong> (hora de Nicaragua). Categorías: Productos (cajeros),
+        MBK, Gerente de Tienda, Limpieza, Seguridad interna y Seguridad tercerizada; los polivalentes se ubican según el área que
+        marcaron. Este horario es de solo lectura (refleja marcajes reales), no es planificación.
       </p>
     </div>
   );
@@ -1507,24 +1650,37 @@ function DashboardPanel() {
   const [days, setDays] = useState(7);
   const [exporting, setExporting] = useState(false);
   const [openEmployee, setOpenEmployee] = useState<{ id: string; name: string } | null>(null);
+  // Rango de fechas para la DESCARGA (independiente del histórico del dashboard).
+  // Por defecto, los últimos 7 días inclusive (hoy + 6 días atrás, hora Nicaragua).
+  const [expFrom, setExpFrom] = useState(() => new Date(Date.now() - 6 * 3600 * 1000 - 6 * 24 * 3600 * 1000).toISOString().slice(0, 10));
+  const [expTo, setExpTo] = useState(() => todayNI());
 
   const doExport = async () => {
+    if (!expFrom || !expTo) {
+      toast.error("Elige el rango de fechas (Desde y Hasta).");
+      return;
+    }
+    if (expFrom > expTo) {
+      toast.error("La fecha 'Desde' no puede ser mayor que 'Hasta'.");
+      return;
+    }
     setExporting(true);
     try {
-      const exportArgs: { days: number; storeId?: string; zoneId?: string } = { days };
+      const exportArgs: { days: number; from?: string; to?: string; storeId?: string; zoneId?: string } = { days, from: expFrom, to: expTo };
       if (filter.storeId !== "all") exportArgs.storeId = filter.storeId;
       else if (filter.zoneId !== "all") exportArgs.zoneId = filter.zoneId;
       const rows = await exportFn({ data: exportArgs });
       const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-      const header = ["Fecha", "Hora", "Codigo", "Nombre", "Rol", "Tienda", "Tipo", "UbicacionValida"];
+      // Cédula entre el código (usuario) y el nombre del colaborador.
+      const header = ["Fecha", "Hora", "Codigo", "Cedula", "Nombre", "Rol", "Tienda", "Tipo", "UbicacionValida"];
       const lines = [header.join(",")].concat(
-        rows.map((r) => [r.fecha, r.hora, r.codigo, esc(r.nombre), r.rol, esc(r.tienda), r.tipo, r.ubicacion_valida].join(",")),
+        rows.map((r) => [r.fecha, r.hora, r.codigo, esc(r.cedula), esc(r.nombre), r.rol, esc(r.tienda), r.tipo, r.ubicacion_valida].join(",")),
       );
       const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `marcajes_${days}d.csv`;
+      a.download = `marcajes_${expFrom}_a_${expTo}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       if (rows.length === 0) toast.message("No hay marcajes en el periodo seleccionado.");
@@ -1571,9 +1727,29 @@ function DashboardPanel() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {filter.bar}
-          <Button variant="outline" size="sm" onClick={doExport} disabled={exporting} title="Descargar los marcajes del periodo (Excel/CSV)">
-            <Download className="h-4 w-4 mr-1" /> {exporting ? "Generando…" : "Descargar"}
-          </Button>
+          <div className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1">
+            <span className="text-xs text-muted-foreground shrink-0">Descarga:</span>
+            <Input
+              type="date"
+              value={expFrom}
+              max={expTo || undefined}
+              onChange={(e) => setExpFrom(e.target.value)}
+              className="h-8 w-[8.5rem]"
+              title="Desde"
+            />
+            <span className="text-xs text-muted-foreground">a</span>
+            <Input
+              type="date"
+              value={expTo}
+              min={expFrom || undefined}
+              onChange={(e) => setExpTo(e.target.value)}
+              className="h-8 w-[8.5rem]"
+              title="Hasta"
+            />
+            <Button variant="outline" size="sm" onClick={doExport} disabled={exporting} title="Descargar los marcajes del rango elegido (Excel/CSV)">
+              <Download className="h-4 w-4 mr-1" /> {exporting ? "Generando…" : "Descargar"}
+            </Button>
+          </div>
           <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
             <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
             <SelectContent>
