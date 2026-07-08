@@ -57,14 +57,28 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
 }
 
 /**
+ * Detecta tablets/teléfonos de gama baja (poca RAM / pocos núcleos), donde TF.js
+ * corre en CPU y bloquea el navegador ("Chrome no responde"). Ej.: las tablets del
+ * piloto con 3 GB de RAM y CPU Unisoc T310 quad-core.
+ */
+export function isLowEndDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+  const cores = navigator.hardwareConcurrency;
+  return (typeof mem === "number" && mem <= 3) || (typeof cores === "number" && cores <= 4);
+}
+
+/**
  * Descriptor (128 floats) de la cara en la imagen. Lanza error si no detecta un
- * rostro o si el motor no pudo cargar.
+ * rostro o si el motor no pudo cargar. En equipos de gama baja usa un inputSize
+ * menor (menos cómputo → menos bloqueo del hilo).
  */
 export async function computeDescriptorFromDataUrl(dataUrl: string): Promise<number[]> {
   const faceapi = await ensureLoaded();
   const img = await loadImage(dataUrl);
+  const inputSize = isLowEndDevice() ? 256 : 416;
   const det = await faceapi
-    .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
+    .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold: 0.5 }))
     .withFaceLandmarks()
     .withFaceDescriptor();
   if (!det) throw new Error("No se detectó un rostro. Acomódate de frente a la cámara.");

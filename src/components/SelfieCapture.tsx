@@ -5,6 +5,7 @@ import {
   computeDescriptorFromDataUrl,
   loadFaceModels,
   runLivenessCheck,
+  isLowEndDevice,
   type LivenessHandle,
 } from "@/lib/face-api";
 
@@ -31,6 +32,10 @@ export function SelfieCapture({
   requireDescriptor,
   requireLiveness,
 }: Props) {
+  // En tablets de gama baja (poca RAM / CPU débil, ej. 3 GB + Unisoc T310) el bucle
+  // del parpadeo bloquea el navegador ("Chrome no responde"); ahí se omite y se usa
+  // captura manual directa (el match facial corre una sola vez, al confirmar).
+  const useLiveness = requireLiveness && !isLowEndDevice();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const livenessHandle = useRef<LivenessHandle>({ cancel: () => {} });
@@ -41,7 +46,7 @@ export function SelfieCapture({
   const [error, setError] = useState<string | null>(null);
   const [computing, setComputing] = useState(false);
   const [faceError, setFaceError] = useState<string | null>(null);
-  const [live, setLive] = useState<LiveState>(requireLiveness ? "scanning" : "manual");
+  const [live, setLive] = useState<LiveState>(useLiveness ? "scanning" : "manual");
   const [liveMsg, setLiveMsg] = useState<string | null>(null);
   const [faceSeen, setFaceSeen] = useState(false);
 
@@ -113,7 +118,7 @@ export function SelfieCapture({
   // con los ojos ya abiertos. Si no detecta (timeout/sin rostro) o el motor no carga,
   // cae a captura manual (el servidor sigue validando la selfie con Gemini).
   const startLiveness = useCallback(async () => {
-    if (!requireLiveness) return;
+    if (!useLiveness) return;
     const video = videoRef.current;
     if (!video || scanningRef.current) return;
     scanningRef.current = true;
@@ -144,18 +149,18 @@ export function SelfieCapture({
     } finally {
       scanningRef.current = false;
     }
-  }, [requireLiveness, snap]);
+  }, [useLiveness, snap]);
 
   // Arrancar el parpadeo cuando hay cámara y no hay foto tomada. Al retomar (preview→null)
   // el efecto se re-ejecuta y vuelve a pedir el parpadeo. Cancela el loop al desmontar.
   useEffect(() => {
-    if (requireLiveness && stream && !preview) {
+    if (useLiveness && stream && !preview) {
       startLiveness();
     }
     return () => {
       livenessHandle.current.cancel();
     };
-  }, [requireLiveness, stream, preview, startLiveness]);
+  }, [useLiveness, stream, preview, startLiveness]);
 
   const retake = () => {
     setPreview(null);
@@ -184,7 +189,7 @@ export function SelfieCapture({
     onCapture(preview, descriptor);
   };
 
-  const scanning = requireLiveness && live === "scanning" && !preview && !error;
+  const scanning = useLiveness && live === "scanning" && !preview && !error;
 
   return (
     <div className="flex flex-col items-center gap-4 w-full">
@@ -300,7 +305,7 @@ export function SelfieCapture({
                 Cancelar
               </Button>
             )}
-            {requireLiveness && (
+            {useLiveness && (
               <Button type="button" variant="outline" className="h-14 px-4" onClick={startLiveness}>
                 <Eye className="mr-2 h-5 w-5" />
                 Reintentar
