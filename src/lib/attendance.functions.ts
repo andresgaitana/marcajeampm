@@ -58,6 +58,10 @@ const markInput = z.object({
   // Datos del guarda para la cuenta compartida de Seguridad Tercerizada.
   guardName: z.string().trim().max(120).optional(),
   guardCompany: z.string().trim().max(120).optional(),
+  // Área del turno (polivalentes que cubren la otra área): productos | mbk.
+  area: z.enum(["productos", "mbk"]).optional(),
+  // Cobertura: el colaborador está cubriendo en una tienda que no es la suya.
+  cobertura: z.boolean().optional(),
 });
 
 /**
@@ -113,8 +117,11 @@ export const markAttendance = createServerFn({ method: "POST" })
       const mins = Math.ceil((new Date(employee.selfie_blocked_until).getTime() - Date.now()) / 60000);
       return { ok: false as const, error: `Bloqueado por selfies inválidas. Reintenta en ${mins} min o contacta al GT.` };
     }
-    // Autorización de marcaje por tienda según rol (tienda ancla / zona del GZ / multi-tienda del GT)
-    if (!(await employeeCanMarkAtStore(employee, store))) {
+    // Autorización de marcaje por tienda según rol (tienda ancla / zona del GZ / multi-tienda del GT).
+    // En modo COBERTURA se permite marcar en cualquier tienda (el agente presta apoyo); la
+    // identidad la garantizan igual el reconocimiento facial + la geocerca.
+    const esCobertura = !!data.cobertura && employee.store_id !== store.id;
+    if (!esCobertura && !(await employeeCanMarkAtStore(employee, store))) {
       return { ok: false as const, error: `Este colaborador no puede marcar en ${store.name}` };
     }
 
@@ -312,6 +319,8 @@ export const markAttendance = createServerFn({ method: "POST" })
         location_valid: locationValid,
         auth_method: authMethod,
         face_override_by: faceOverrideBy,
+        area: data.area ?? null,
+        cobertura: esCobertura,
       });
     if (insErr) return { ok: false as const, error: "Error guardando marcaje" };
 
@@ -352,6 +361,8 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     z.object({
       employeeCode: z.string().trim().min(1).max(32),
       storeCode: z.string().trim().min(1).max(32),
+      // Modo cobertura: acepta a un colaborador de OTRA tienda (apoyo).
+      cover: z.boolean().optional(),
     }).parse(input),
   )
   .handler(async ({ data }) => {
@@ -360,13 +371,17 @@ export const lookupEmployee = createServerFn({ method: "POST" })
     if (!store) return { found: false as const };
     const { data: emp } = await supabaseAdmin
       .from("employees")
-      .select("id, full_name, role, active, store_id, pin_hash, password_hash, username")
+      .select("id, full_name, role, active, store_id, polivalente, pin_hash, password_hash, username")
       .in("employee_code", codeCandidates(data.employeeCode))
       .maybeSingle();
     if (!emp || !emp.active) return { found: false as const };
-    if (!(await employeeCanMarkAtStore(emp, store))) {
+    const canMark = await employeeCanMarkAtStore(emp, store);
+    // Sin cobertura: solo colaboradores de esta tienda. Con cobertura: se acepta a
+    // cualquiera, marcando que viene de otra tienda (apoyo).
+    if (!canMark && !data.cover) {
       return { found: false as const, wrongStore: true as const };
     }
+    const fromOtherStore = !canMark && emp.store_id !== store.id;
     const { count: credCount } = await supabaseAdmin
       .from("employee_credentials")
       .select("*", { count: "exact", head: true })
@@ -375,6 +390,8 @@ export const lookupEmployee = createServerFn({ method: "POST" })
       found: true as const,
       full_name: emp.full_name,
       role: emp.role,
+      polivalente: !!emp.polivalente,
+      fromOtherStore,
       hasPin: !!emp.pin_hash,
       hasPassword: !!emp.password_hash,
       hasWebauthn: (credCount ?? 0) > 0,

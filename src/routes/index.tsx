@@ -26,7 +26,7 @@ export const Route = createFileRoute("/")({
   component: MarcajePage,
 });
 
-type Step = "type" | "code" | "method" | "pin" | "password" | "webauthn" | "selfie" | "confirming" | "override" | "newpin" | "guarda" | "done";
+type Step = "type" | "code" | "cover" | "method" | "pin" | "password" | "webauthn" | "area" | "selfie" | "confirming" | "override" | "newpin" | "guarda" | "done";
 type AttType = "entrada" | "salida";
 type AuthMethod = "pin" | "password" | "webauthn";
 type GeoState = { lat: number; lng: number; accuracy: number } | null;
@@ -48,6 +48,8 @@ type MarkInput = {
   supervisorPin?: string;
   guardName?: string;
   guardCompany?: string;
+  area?: "productos" | "mbk";
+  cobertura?: boolean;
 };
 
 function MarcajePage() {
@@ -80,6 +82,11 @@ function MarcajePage() {
   const [isGuard, setIsGuard] = useState(false);
   const [guardName, setGuardName] = useState("");
   const [guardCompany, setGuardCompany] = useState("");
+  // Caso 1 (cobertura): el colaborador es de otra tienda y presta apoyo aquí.
+  const [cobertura, setCobertura] = useState(false);
+  // Caso 2 (polivalente): cajero que apoya en la otra área; se le pregunta el área al entrar.
+  const [isPolivalente, setIsPolivalente] = useState(false);
+  const [area, setArea] = useState<"productos" | "mbk" | null>(null);
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -125,14 +132,28 @@ function MarcajePage() {
     setIsGuard(false);
     setGuardName("");
     setGuardCompany("");
+    setCobertura(false);
+    setIsPolivalente(false);
+    setArea(null);
   };
 
-  const submitCode = async () => {
+  // Paso siguiente tras autenticarse: guarda tercerizado → sus datos; polivalente
+  // que ENTRA → escoger área; en cualquier otro caso, directo a la selfie.
+  const nextAfterAuth = (): Step =>
+    isGuard ? "guarda" : isPolivalente && type === "entrada" ? "area" : "selfie";
+
+  const submitCode = async (cover = false) => {
     if (!code || !type || !terminal) return;
     setLoading(true);
     try {
-      const res = await lookup({ data: { employeeCode: code, storeCode: terminal.code } });
+      const res = await lookup({ data: { employeeCode: code, storeCode: terminal.code, cover } });
       if (!res.found) {
+        // El colaborador existe pero es de otra tienda: ofrecer marcar como cobertura
+        // (Autoservicio, sin aprobación del GT). Si ya venimos de cobertura, es error real.
+        if ("wrongStore" in res && res.wrongStore && !cover) {
+          setStep("cover");
+          return;
+        }
         toast.error(
           "wrongStore" in res && res.wrongStore
             ? `Este colaborador no pertenece a ${terminal.name}`
@@ -143,6 +164,8 @@ function MarcajePage() {
       }
       setEmployeeName(res.full_name);
       setIsGuard(res.role === "seguridad_tercerizada");
+      setCobertura(!!res.fromOtherStore);
+      setIsPolivalente(!!res.polivalente);
       const m: AuthMethod[] = [];
       if (res.hasWebauthn) m.push("webauthn");
       if (res.hasPassword) m.push("password");
@@ -189,7 +212,7 @@ function MarcajePage() {
       }
       const assertion = await startAuthentication({ optionsJSON: res.options });
       setWebauthnResponse(assertion);
-      setStep(isGuard ? "guarda" : "selfie");
+      setStep(nextAfterAuth());
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Cancelado o no soportado");
       setStep(methods.length > 1 ? "method" : "code");
@@ -201,7 +224,7 @@ function MarcajePage() {
       toast.error("El PIN debe tener al menos 4 dígitos");
       return;
     }
-    setStep(isGuard ? "guarda" : "selfie");
+    setStep(nextAfterAuth());
   };
 
   const submitPassword = () => {
@@ -209,7 +232,7 @@ function MarcajePage() {
       toast.error("La contraseña debe tener al menos 6 caracteres");
       return;
     }
-    setStep(isGuard ? "guarda" : "selfie");
+    setStep(nextAfterAuth());
   };
 
   const submit = async (payload: MarkInput) => {
@@ -273,6 +296,8 @@ function MarcajePage() {
       payload.guardName = guardName.trim();
       if (guardCompany.trim()) payload.guardCompany = guardCompany.trim();
     }
+    if (cobertura) payload.cobertura = true;
+    if (area) payload.area = area;
     if (geo) {
       payload.latitude = geo.lat;
       payload.longitude = geo.lng;
@@ -440,9 +465,37 @@ function MarcajePage() {
                 <Button
                   className="flex-[2] h-14 text-base bg-primary text-primary-foreground hover:bg-primary/90"
                   disabled={!code || loading}
-                  onClick={submitCode}
+                  onClick={() => submitCode()}
                 >
                   {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Continuar"}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {step === "cover" && (
+            <>
+              <div className="text-center mb-6">
+                <div className="mx-auto h-14 w-14 rounded-2xl bg-accent/10 flex items-center justify-center mb-3">
+                  <Store className="h-8 w-8 text-accent" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">¿Estás cubriendo un turno?</h2>
+                <p className="text-sm text-muted-foreground mt-2">
+                  El código <span className="font-mono font-semibold text-foreground">{code}</span> no pertenece a {terminal.name}.
+                  Si vienes a cubrir un turno aquí, continúa: tu marcaje quedará registrado como
+                  <span className="font-semibold text-foreground"> cobertura</span> y tu tienda de origen lo verá en su reporte.
+                </p>
+              </div>
+              <div className="flex flex-col gap-3">
+                <Button
+                  className="h-14 bg-accent text-accent-foreground hover:bg-accent/90"
+                  disabled={loading}
+                  onClick={() => submitCode(true)}
+                >
+                  {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Sí, estoy cubriendo turno"}
+                </Button>
+                <Button variant="outline" className="h-12" onClick={() => { setStep("code"); setCode(""); }}>
+                  Corregir código
                 </Button>
               </div>
             </>
@@ -586,13 +639,52 @@ function MarcajePage() {
             </>
           )}
 
+          {step === "area" && (
+            <>
+              <div className="text-center mb-6">
+                <p className="text-sm text-muted-foreground">{employeeName}</p>
+                <h2 className="text-xl font-bold text-foreground mt-1">¿En qué área entras hoy?</h2>
+                <p className="text-sm text-muted-foreground mt-1">Selecciona dónde cubrirás el turno</p>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                <button
+                  onClick={() => { setArea("productos"); setStep("selfie"); }}
+                  className="h-24 rounded-2xl bg-primary text-primary-foreground flex flex-col items-center justify-center gap-1 shadow-[var(--shadow-soft)] active:scale-95 transition-transform"
+                >
+                  <span className="text-2xl font-bold tracking-wide">Productos</span>
+                  <span className="text-xs opacity-80">Caja y tienda</span>
+                </button>
+                <button
+                  onClick={() => { setArea("mbk"); setStep("selfie"); }}
+                  className="h-24 rounded-2xl bg-accent text-accent-foreground flex flex-col items-center justify-center gap-1 shadow-[var(--shadow-soft)] active:scale-95 transition-transform"
+                >
+                  <span className="text-2xl font-bold tracking-wide">MBK</span>
+                  <span className="text-xs opacity-80">Panadería</span>
+                </button>
+              </div>
+              <Button variant="outline" className="w-full mt-4 h-12" onClick={reset}>Cancelar</Button>
+            </>
+          )}
+
           {step === "selfie" && (
             <>
               <div className="text-center mb-4">
                 <h2 className="text-xl font-bold text-foreground">Toma tu selfie</h2>
                 <p className="text-sm text-muted-foreground">Mira a la cámara y parpadea cuando se te indique</p>
+                {cobertura && (
+                  <p className="text-xs font-semibold text-accent mt-1">Marcaje de cobertura en {terminal.name}</p>
+                )}
+                {area && (
+                  <p className="text-xs font-semibold text-primary mt-1">
+                    Turno en {area === "productos" ? "Productos" : "MBK"}
+                  </p>
+                )}
               </div>
-              <SelfieCapture requireLiveness onCapture={onSelfie} onCancel={() => setStep(isGuard ? "guarda" : "pin")} />
+              <SelfieCapture
+                requireLiveness
+                onCapture={onSelfie}
+                onCancel={() => setStep(isGuard ? "guarda" : isPolivalente && type === "entrada" ? "area" : "pin")}
+              />
             </>
           )}
 

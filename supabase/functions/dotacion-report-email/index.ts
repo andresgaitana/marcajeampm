@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
       supabase.from("stores").select("id, code, name, zone_id").eq("active", true),
       supabase.from("store_staffing").select("store_id, prod_agents, mbk_agents"),
       supabase.from("employees").select("id, role").eq("active", true).in("role", ["cajero", "agente_mbk"]),
-      supabase.from("attendance_records").select("created_at, employee_id, store_id").eq("type", "entrada").gte("created_at", startTodayISO),
+      supabase.from("attendance_records").select("created_at, employee_id, store_id, area").eq("type", "entrada").gte("created_at", startTodayISO),
       supabase.from("user_roles").select("user_id, role"),
       supabase.from("user_zone_assignments").select("user_id, zone_id"),
       supabase.from("store_managers").select("user_id, store_id"),
@@ -101,9 +101,14 @@ Deno.serve(async (req) => {
     const mbkSet = new Map<string, Set<string>>();
     for (const r of recs) {
       const role = roleById.get(r.employee_id);
-      if (!role) continue;
+      // Área operativa: la registrada en el marcaje (polivalente/cobertura) tiene
+      // prioridad; si no hay, se deriva del rol (cajero → Productos, agente_mbk → MBK).
+      const area = r.area === "productos" || r.area === "mbk"
+        ? r.area
+        : role === "cajero" ? "productos" : role === "agente_mbk" ? "mbk" : null;
+      if (!area) continue;
       const h = new Date(new Date(r.created_at).getTime() - NI_OFFSET_MS).getUTCHours();
-      if (role === "cajero") {
+      if (area === "productos") {
         if ((corte === "AM") !== bandProdAM(h)) continue;
         if (!prodSet.has(r.store_id)) prodSet.set(r.store_id, new Set());
         prodSet.get(r.store_id)!.add(r.employee_id);

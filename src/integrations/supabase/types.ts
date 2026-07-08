@@ -16,7 +16,9 @@ export type Database = {
     Tables: {
       attendance_records: {
         Row: {
+          area: string | null
           auth_method: Database["public"]["Enums"]["auth_method"]
+          cobertura: boolean
           created_at: string
           employee_id: string
           face_override_by: string | null
@@ -31,7 +33,9 @@ export type Database = {
           type: Database["public"]["Enums"]["attendance_type"]
         }
         Insert: {
+          area?: string | null
           auth_method?: Database["public"]["Enums"]["auth_method"]
+          cobertura?: boolean
           created_at?: string
           employee_id: string
           face_override_by?: string | null
@@ -46,7 +50,9 @@ export type Database = {
           type: Database["public"]["Enums"]["attendance_type"]
         }
         Update: {
+          area?: string | null
           auth_method?: Database["public"]["Enums"]["auth_method"]
+          cobertura?: boolean
           created_at?: string
           employee_id?: string
           face_override_by?: string | null
@@ -171,6 +177,7 @@ export type Database = {
           must_change_pin: boolean
           password_hash: string | null
           pin_hash: string
+          polivalente: boolean
           role: Database["public"]["Enums"]["employee_role"]
           selfie_blocked_until: string | null
           store: string | null
@@ -191,6 +198,7 @@ export type Database = {
           must_change_pin?: boolean
           password_hash?: string | null
           pin_hash: string
+          polivalente?: boolean
           role?: Database["public"]["Enums"]["employee_role"]
           selfie_blocked_until?: string | null
           store?: string | null
@@ -211,6 +219,7 @@ export type Database = {
           must_change_pin?: boolean
           password_hash?: string | null
           pin_hash?: string
+          polivalente?: boolean
           role?: Database["public"]["Enums"]["employee_role"]
           selfie_blocked_until?: string | null
           store?: string | null

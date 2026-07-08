@@ -19,6 +19,7 @@ type Rec = {
   created_at: string;
   employee_id: string;
   store_id: string;
+  area?: string | null;
 };
 
 // Nicaragua = UTC-6 todo el año (sin horario de verano desde 2006).
@@ -36,6 +37,18 @@ function guardNameFromNotes(notes: string | null | undefined): string | null {
   if (!notes) return null;
   const m = notes.match(/Guarda tercerizado:\s*([^(·]+?)\s*(?:\(|·|$)/);
   return m ? m[1].trim() : null;
+}
+
+/**
+ * Área operativa de un marcaje: la que quedó REGISTRADA en el marcaje (polivalente
+ * que escogió área al entrar, o cobertura) tiene prioridad; si no hay, se deriva del
+ * rol (cajero → Productos, agente_mbk → MBK). Devuelve null si no aplica a dotación.
+ */
+function effectiveArea(recArea: string | null | undefined, role: string | undefined): "productos" | "mbk" | null {
+  if (recArea === "productos" || recArea === "mbk") return recArea;
+  if (role === "cajero") return "productos";
+  if (role === "agente_mbk") return "mbk";
+  return null;
 }
 
 export const getDashboardMetrics = createServerFn({ method: "POST" })
@@ -69,7 +82,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
 
     let q = supabaseAdmin
       .from("attendance_records")
-      .select("id, type, created_at, employee_id, store_id")
+      .select("id, type, created_at, employee_id, store_id, area")
       .gte("created_at", since.toISOString())
       .order("created_at", { ascending: false })
       .limit(8000);
@@ -205,12 +218,12 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     const todayBuck = new Map<string, Buck>();
     for (const r of todayRecs) {
       if (r.type !== "entrada") continue;
-      const role = roleById.get(r.employee_id);
-      if (role !== "cajero" && role !== "agente_mbk") continue;
+      const area = effectiveArea(r.area, roleById.get(r.employee_id));
+      if (!area) continue;
       const hour = managuaParts(r.created_at).hour;
       if (!todayBuck.has(r.store_id)) todayBuck.set(r.store_id, newBuck());
       const b = todayBuck.get(r.store_id)!;
-      if (role === "cajero") (hour >= 5 && hour < 17 ? b.pAm : b.pPm).add(r.employee_id);
+      if (area === "productos") (hour >= 5 && hour < 17 ? b.pAm : b.pPm).add(r.employee_id);
       else (hour >= 5 && hour < 13 ? b.mAm : b.mPm).add(r.employee_id);
     }
     // Semana: distintos por tienda/área/día (para sumar la cobertura de los 7 días).
@@ -218,11 +231,11 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     const weekMbk = new Map<string, Map<string, Set<string>>>();
     for (const r of records) {
       if (r.type !== "entrada") continue;
-      const role = roleById.get(r.employee_id);
-      if (role !== "cajero" && role !== "agente_mbk") continue;
+      const area = effectiveArea(r.area, roleById.get(r.employee_id));
+      if (!area) continue;
       const ds = managuaParts(r.created_at).date;
       if (!weekDaySet.has(ds)) continue;
-      const target = role === "cajero" ? weekProd : weekMbk;
+      const target = area === "productos" ? weekProd : weekMbk;
       if (!target.has(r.store_id)) target.set(r.store_id, new Map());
       const dm = target.get(r.store_id)!;
       if (!dm.has(ds)) dm.set(ds, new Set());
@@ -751,22 +764,23 @@ export const getStaffingReport = createServerFn({ method: "POST" })
     if (storeIds.length) {
       const { data: recs } = await supabaseAdmin
         .from("attendance_records")
-        .select("created_at, store_id, employee:employees!employee_id(id, full_name, role)")
+        .select("created_at, store_id, area, employee:employees!employee_id(id, full_name, role)")
         .eq("type", "entrada")
         .gte("created_at", fromISO).lt("created_at", toISO)
         .in("store_id", storeIds).limit(20000);
       for (const rec of recs ?? []) {
         const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
         if (!emp) continue;
-        const role = emp.role as string;
-        if (role !== "cajero" && role !== "agente_mbk") continue;
+        // Área operativa: la registrada (polivalente/cobertura) o, si no, la del rol.
+        const area = effectiveArea(rec.area as string | null, emp.role as string);
+        if (!area) continue;
         const { hour } = managuaParts(rec.created_at as string);
         const sid = rec.store_id as string;
         if (!byStore.has(sid)) byStore.set(sid, { prodAm: new Map(), prodPm: new Map(), mbkAm: new Map(), mbkPm: new Map() });
         const b = byStore.get(sid)!;
         // Mismas bandas que el Horario (tolerancia de llegada temprana):
         // Productos AM 5:00-17:00; MBK AM 5:00-13:00 (la tarde entra ~13:30 → PM).
-        if (role === "cajero") (hour >= 5 && hour < 17 ? b.prodAm : b.prodPm).set(emp.id as string, emp.full_name as string);
+        if (area === "productos") (hour >= 5 && hour < 17 ? b.prodAm : b.prodPm).set(emp.id as string, emp.full_name as string);
         else (hour >= 5 && hour < 13 ? b.mbkAm : b.mbkPm).set(emp.id as string, emp.full_name as string);
       }
     }
@@ -791,6 +805,121 @@ export const getStaffingReport = createServerFn({ method: "POST" })
       };
     });
     return { date: dateStr, dow, rows };
+  });
+
+/**
+ * Reporte de Coberturas / Apoyos: marcajes hechos en modo cobertura (un colaborador
+ * que marcó en una tienda que NO es la suya). Empareja entrada→salida para dar las
+ * horas de cada turno de apoyo, con la tienda que PRESTÓ y la que RECIBIÓ. Sirve para
+ * que planilla reconozca las horas y la tienda de origen reporte el préstamo.
+ * Alcance: incluye el turno si la tienda receptora O la de origen están en el alcance.
+ */
+export const getCoverageReport = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      days: z.number().int().min(1).max(90).default(14),
+      storeId: z.string().uuid().optional(),
+      zoneId: z.string().uuid().optional(),
+    }).parse(i ?? {}),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    let effective: string[] | "all" = scope.storeIds;
+    if (data.storeId) {
+      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+    } else if (data.zoneId) {
+      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+      let ids = (zs ?? []).map((s) => s.id as string);
+      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+      effective = ids;
+    }
+    const effSet = effective === "all" ? null : new Set(effective);
+
+    const since = new Date(Date.now() - data.days * 24 * 3600 * 1000);
+    const { data: recs } = await supabaseAdmin
+      .from("attendance_records")
+      .select("id, type, created_at, store_id, area, employee:employees!employee_id(id, full_name, employee_code, role, store_id)")
+      .eq("cobertura", true)
+      .gte("created_at", since.toISOString())
+      .order("created_at", { ascending: true })
+      .limit(20000);
+
+    const { data: storesData } = await supabaseAdmin.from("stores").select("id, code, name");
+    const storeMap = new Map((storesData ?? []).map((s) => [s.id as string, { code: s.code as string, name: s.name as string }]));
+
+    // Agrupar por (colaborador + tienda donde cubre) y emparejar entrada→salida.
+    type Ev = { type: "entrada" | "salida"; ms: number; area: string | null };
+    const groups = new Map<string, {
+      empId: string; name: string; code: string; role: string; homeStoreId: string; coverStoreId: string; evs: Ev[];
+    }>();
+    for (const rec of recs ?? []) {
+      const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
+      if (!emp) continue;
+      const coverId = rec.store_id as string;
+      const homeId = emp.store_id as string;
+      // Incluir si la tienda que RECIBIÓ o la que PRESTÓ están en el alcance.
+      if (effSet && !effSet.has(coverId) && !effSet.has(homeId)) continue;
+      const key = `${emp.id}|${coverId}`;
+      if (!groups.has(key)) groups.set(key, {
+        empId: emp.id as string, name: emp.full_name as string, code: emp.employee_code as string,
+        role: emp.role as string, homeStoreId: homeId, coverStoreId: coverId, evs: [],
+      });
+      groups.get(key)!.evs.push({
+        type: rec.type as "entrada" | "salida",
+        ms: new Date(rec.created_at as string).getTime(),
+        area: (rec.area as string | null) ?? null,
+      });
+    }
+
+    const SHIFT_MAX = 14 * 3600 * 1000;
+    const shifts: Array<{
+      empId: string; name: string; code: string; role: string;
+      homeStore: string; homeStoreName: string; coverStore: string; coverStoreName: string;
+      date: string; entrada: string; salida: string | null; hours: number | null; area: string | null; enCurso: boolean;
+    }> = [];
+    for (const g of groups.values()) {
+      g.evs.sort((a, b) => a.ms - b.ms);
+      const home = storeMap.get(g.homeStoreId);
+      const cover = storeMap.get(g.coverStoreId);
+      const pushShift = (entrada: Ev, salida: Ev | null) => {
+        const local = new Date(entrada.ms - NI_OFFSET_MS);
+        const areaLabel = entrada.area === "mbk" ? "MBK" : entrada.area === "productos" ? "Productos" : null;
+        shifts.push({
+          empId: g.empId, name: g.name, code: g.code,
+          role: g.role === "agente_mbk" ? "MBK" : "Productos",
+          homeStore: home?.code ?? "—", homeStoreName: home?.name ?? "",
+          coverStore: cover?.code ?? "—", coverStoreName: cover?.name ?? "",
+          date: local.toISOString().slice(0, 10),
+          entrada: new Date(entrada.ms).toISOString(),
+          salida: salida ? new Date(salida.ms).toISOString() : null,
+          hours: salida ? Math.round(((salida.ms - entrada.ms) / 3600000) * 10) / 10 : null,
+          area: areaLabel,
+          enCurso: !salida,
+        });
+      };
+      let open: Ev | null = null;
+      for (const ev of g.evs) {
+        if (ev.type === "entrada") {
+          if (open) pushShift(open, null); // entrada previa sin salida
+          open = ev;
+        } else if (open && ev.ms - open.ms <= SHIFT_MAX) {
+          pushShift(open, ev);
+          open = null;
+        }
+        // salida huérfana (sin entrada) se ignora
+      }
+      if (open) pushShift(open, null);
+    }
+    shifts.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.coverStore.localeCompare(b.coverStore)));
+
+    const totalHours = shifts.reduce((s, x) => s + (x.hours ?? 0), 0);
+    return {
+      days: data.days,
+      shifts,
+      total_shifts: shifts.length,
+      total_hours: Math.round(totalHours * 10) / 10,
+    };
   });
 
 /** Editar el presupuesto de agentes de una tienda (solo Super admin). */

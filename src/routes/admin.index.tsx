@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance, getStaffingReport, getAttendanceKpis } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport } from "@/lib/dashboard.functions";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -78,7 +78,7 @@ import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
   Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
-  ClipboardCheck,
+  ClipboardCheck, ArrowLeftRight,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -213,6 +213,10 @@ function AdminDashboard() {
           <History className="h-4 w-4 mr-2" />
           Marcajes
         </TabsTrigger>
+        <TabsTrigger value="coverage" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <ArrowLeftRight className="h-4 w-4 mr-2" />
+          Coberturas
+        </TabsTrigger>
         <TabsTrigger value="employees" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <Users className="h-4 w-4 mr-2" />
           Colaboradores
@@ -250,6 +254,9 @@ function AdminDashboard() {
       </TabsContent>
       <TabsContent value="attendance">
         <AttendancePanel />
+      </TabsContent>
+      <TabsContent value="coverage">
+        <CoveragePanel />
       </TabsContent>
       <TabsContent value="employees">
         <EmployeesPanel />
@@ -461,6 +468,7 @@ function EmployeesPanel() {
     employee_code: "",
     full_name: "",
     cedula: "",
+    polivalente: false,
     role: "cajero" as EmployeeRole,
     store_id: "",
     pin: "",
@@ -475,6 +483,7 @@ function EmployeesPanel() {
         employee_code: editing.employee_code,
         full_name: editing.full_name,
         cedula: editing.cedula ?? "",
+        polivalente: editing.polivalente ?? false,
         role: editing.role as EmployeeRole,
         store_id: editing.store_id ?? "",
         pin: "",
@@ -486,6 +495,7 @@ function EmployeesPanel() {
         employee_code: "",
         full_name: "",
         cedula: "",
+        polivalente: false,
         role: "cajero",
         store_id: storeList[0]?.id ?? "",
         pin: "",
@@ -508,6 +518,7 @@ function EmployeesPanel() {
             id: editing.id,
             full_name: form.full_name,
             cedula: form.cedula,
+            polivalente: form.role === "cajero" || form.role === "agente_mbk" ? form.polivalente : false,
             role: form.role,
             store_id: form.store_id,
             active: form.active,
@@ -528,6 +539,7 @@ function EmployeesPanel() {
             employee_code: form.employee_code,
             full_name: form.full_name,
             cedula: form.cedula,
+            polivalente: form.role === "cajero" || form.role === "agente_mbk" ? form.polivalente : false,
             role: form.role,
             store_id: form.store_id,
             pin: form.pin,
@@ -638,6 +650,23 @@ function EmployeesPanel() {
                   </Select>
                 </div>
               </div>
+              {(form.role === "cajero" || form.role === "agente_mbk") && (
+                <label className="flex items-start gap-2 text-sm rounded-lg border border-border p-3">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={form.polivalente}
+                    onChange={(e) => setForm({ ...form, polivalente: e.target.checked })}
+                  />
+                  <span>
+                    <span className="font-medium text-foreground">Polivalente (apoya en la otra área)</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Cajero que también cubre en {form.role === "cajero" ? "MBK" : "Productos"}. Al marcar
+                      ENTRADA se le preguntará en qué área trabajará ese turno.
+                    </span>
+                  </span>
+                </label>
+              )}
               {form.role === "gerente_zona" && editing && (
                 <ZoneAssignmentsEditor
                   employeeId={editing.id}
@@ -1008,6 +1037,131 @@ function StaffingPanel() {
       </Tabs>
       <p className="text-xs text-muted-foreground">
         Productos = cajeros; MBK = Agente MBK. <strong>Real</strong> = quienes marcaron entrada en ese corte; <strong>Plan</strong> = meta según el presupuesto y el día. Verde = cumple, ámbar = falta. <strong>Exportar Excel</strong> baja el corte seleccionado.
+      </p>
+    </div>
+  );
+}
+
+// =====================================================================
+// COBERTURAS: apoyos entre tiendas (marcajes en modo cobertura)
+// =====================================================================
+function CoveragePanel() {
+  const reportFn = useServerFn(getCoverageReport);
+  const filter = useStoreFilter();
+  const [days, setDays] = useState("14");
+
+  const args: { days: number; storeId?: string; zoneId?: string } = { days: Number(days) };
+  if (filter.storeId !== "all") args.storeId = filter.storeId;
+  else if (filter.zoneId !== "all") args.zoneId = filter.zoneId;
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["coverage", days, filter.zoneId, filter.storeId],
+    queryFn: () => reportFn({ data: args }),
+  });
+  const shifts = data?.shifts ?? [];
+
+  // Hora local Nicaragua (UTC-6) desde un ISO UTC.
+  const hhmm = (iso: string | null) =>
+    iso ? new Date(new Date(iso).getTime() - 6 * 3600 * 1000).toISOString().slice(11, 16) : "—";
+  const dmy = (d: string) => { const [, m, dd] = d.split("-"); return `${dd}/${m}`; };
+
+  const exportCsv = () => {
+    const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const header = ["Fecha", "Codigo", "Nombre", "Area", "Tienda origen (presto)", "Tienda cobertura (recibio)", "Entrada", "Salida", "Horas"];
+    const lines = [header.join(",")].concat(
+      shifts.map((s) => [
+        s.date, s.code, esc(s.name), s.area ?? s.role,
+        esc(`${s.homeStore} ${s.homeStoreName}`), esc(`${s.coverStore} ${s.coverStoreName}`),
+        hhmm(s.entrada), s.enCurso ? "en curso" : hhmm(s.salida),
+        s.hours != null ? String(s.hours) : "",
+      ].join(",")),
+    );
+    const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `coberturas_${days}d.csv`; a.click(); URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-foreground">Coberturas / Apoyos entre tiendas</h2>
+          <p className="text-sm text-muted-foreground">
+            Colaboradores que marcaron en una tienda que no es la suya: la tienda que <strong>prestó</strong>, la que <strong>recibió</strong> el apoyo y las horas del turno, para reconocer en planilla.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {filter.bar}
+          <Select value={days} onValueChange={setDays}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7">7 días</SelectItem>
+              <SelectItem value="14">14 días</SelectItem>
+              <SelectItem value="30">30 días</SelectItem>
+              <SelectItem value="60">60 días</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={exportCsv} disabled={shifts.length === 0}>
+            <Download className="h-4 w-4 mr-1" /> Exportar Excel
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 max-w-md">
+        <div className="bg-card rounded-2xl border border-border p-4">
+          <div className="text-xs text-muted-foreground">Turnos de cobertura</div>
+          <div className="text-2xl font-bold text-foreground">{data?.total_shifts ?? 0}</div>
+        </div>
+        <div className="bg-card rounded-2xl border border-border p-4">
+          <div className="text-xs text-muted-foreground">Horas de apoyo</div>
+          <div className="text-2xl font-bold text-foreground">{data?.total_hours ?? 0}</div>
+        </div>
+      </div>
+
+      <div className="bg-card rounded-2xl border border-border overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-secondary/50">
+              <TableHead>Fecha</TableHead>
+              <TableHead>Colaborador</TableHead>
+              <TableHead>Área</TableHead>
+              <TableHead>Prestó</TableHead>
+              <TableHead>Cubrió en</TableHead>
+              <TableHead>Entrada</TableHead>
+              <TableHead>Salida</TableHead>
+              <TableHead className="text-right">Horas</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isError ? (
+              <TableRow><TableCell colSpan={8} className="text-center text-destructive py-8">{error instanceof Error ? error.message : "Error al cargar"}</TableCell></TableRow>
+            ) : isLoading ? (
+              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Cargando…</TableCell></TableRow>
+            ) : shifts.length === 0 ? (
+              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Sin coberturas en el periodo.</TableCell></TableRow>
+            ) : (
+              shifts.map((s, i) => (
+                <TableRow key={`${s.empId}-${s.entrada}-${i}`}>
+                  <TableCell className="whitespace-nowrap">{dmy(s.date)}</TableCell>
+                  <TableCell>
+                    <div className="font-medium text-foreground">{s.name}</div>
+                    <div className="text-xs text-muted-foreground font-mono">{s.code}</div>
+                  </TableCell>
+                  <TableCell>{s.area ?? s.role}</TableCell>
+                  <TableCell className="whitespace-nowrap font-mono font-semibold">{s.homeStore}</TableCell>
+                  <TableCell className="whitespace-nowrap font-mono font-semibold text-accent">{s.coverStore}</TableCell>
+                  <TableCell className="font-mono">{hhmm(s.entrada)}</TableCell>
+                  <TableCell className="font-mono">{s.enCurso ? <span className="text-amber-600">en curso</span> : hhmm(s.salida)}</TableCell>
+                  <TableCell className="text-right font-semibold">{s.hours != null ? s.hours : "—"}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        <strong>Prestó</strong> = tienda base del colaborador · <strong>Cubrió en</strong> = tienda donde marcó el apoyo. Las horas cuentan cuando hay entrada y salida emparejadas (turno de hasta 14 h); “en curso” indica que aún no marca la salida.
       </p>
     </div>
   );
