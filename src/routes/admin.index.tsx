@@ -1400,6 +1400,21 @@ const SCHEDULE_ROW_STYLES: Record<string, { label: string; chip: string }> = {
   TERC_PM: { label: "text-fuchsia-700", chip: "bg-fuchsia-100 text-fuchsia-900 border-fuchsia-200" },
 };
 
+// Colores concretos (hex) para el PDF del horario, equivalentes a los chips de la
+// pantalla (SCHEDULE_ROW_STYLES), para que el documento descargado se vea igual.
+const SCHED_PRINT_COLORS: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  PROD_AM: { label: "#b45309", bg: "#fef3c7", text: "#78350f", border: "#fde68a" },
+  PROD_PM: { label: "#1d4ed8", bg: "#dbeafe", text: "#1e3a8a", border: "#bfdbfe" },
+  MBK_AM: { label: "#c2410c", bg: "#ffedd5", text: "#7c2d12", border: "#fed7aa" },
+  MBK_PM: { label: "#0369a1", bg: "#e0f2fe", text: "#0c4a6e", border: "#bae6fd" },
+  GT_AM: { label: "#4338ca", bg: "#e0e7ff", text: "#312e81", border: "#c7d2fe" },
+  GT_PM: { label: "#6d28d9", bg: "#ede9fe", text: "#4c1d95", border: "#ddd6fe" },
+  LIMP_AM: { label: "#0f766e", bg: "#ccfbf1", text: "#134e4a", border: "#99f6e4" },
+  LIMP_PM: { label: "#047857", bg: "#d1fae5", text: "#064e3b", border: "#a7f3d0" },
+  SEG_AM: { label: "#be123c", bg: "#ffe4e6", text: "#881337", border: "#fecdd3" },
+  SEG_PM: { label: "#b91c1c", bg: "#fee2e2", text: "#7f1d1d", border: "#fecaca" },
+};
+
 // ── Impresión del horario (documento para descargar / imprimir a PDF) ──
 function escHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
@@ -1408,6 +1423,7 @@ function escHtml(s: string): string {
 // gesto del usuario, antes del await, para que el bloqueador de popups no la corte).
 function openPrintDoc(win: Window, title: string, innerHtml: string) {
   const css = `
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
     body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:24px}
     h1{font-size:18px;margin:0 0 2px;color:#E8622A}
     .sub{color:#555;font-size:12px;margin:0 0 16px}
@@ -1418,7 +1434,7 @@ function openPrintDoc(win: Window, title: string, innerHtml: string) {
     th{background:#f2f2f2}
     .rl{font-weight:bold;white-space:nowrap}
     .dn{font-weight:normal;color:#888}
-    .p{white-space:nowrap}
+    .chip{display:block;border:1px solid #ccc;border-radius:6px;padding:2px 6px;margin:2px 0;font-size:10px;white-space:nowrap}
     .dash{color:#aaa}
     .pb{page-break-after:always}
     @media print{body{margin:0}}
@@ -1438,13 +1454,17 @@ type PrintWeek = { weekStart: string; weekEnd: string; days: PrintDay[]; rows: P
 type SchedulePrintData = { store: { code: string; name: string }; weekStart: string; weekEnd: string; weeks: PrintWeek[] };
 
 function buildSchedulePrintHtml(data: SchedulePrintData): string {
+  const neutral = { label: "#111", bg: "#f2f2f2", text: "#111", border: "#ccc" };
   const week = (w: PrintWeek) => {
     const heads = w.days.map((d) => `<th>${d.label}<br><span class="dn">${d.dayNum}</span></th>`).join("");
     const body = w.rows.map((r) => {
+      const col = SCHED_PRINT_COLORS[r.key] ?? neutral;
       const cells = r.cells.map((c) =>
-        `<td>${c.people.length ? c.people.map((p) => `<div class="p">${escHtml(p.name)}</div>`).join("") : '<span class="dash">—</span>'}</td>`,
+        `<td>${c.people.length
+          ? c.people.map((p) => `<span class="chip" style="background:${col.bg};color:${col.text};border-color:${col.border}">${escHtml(p.name)}</span>`).join("")
+          : '<span class="dash">—</span>'}</td>`,
       ).join("");
-      return `<tr><td class="rl">${escHtml(r.label)}</td>${cells}</tr>`;
+      return `<tr><td class="rl" style="color:${col.label}">${escHtml(r.label)}</td>${cells}</tr>`;
     }).join("");
     return `<h3>Semana del ${fmtDM(w.weekStart)} al ${fmtDM(w.weekEnd)}</h3>` +
       `<table><thead><tr><th class="rl">Turno</th>${heads}</tr></thead><tbody>${body}</tbody></table>`;
