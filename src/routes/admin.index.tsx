@@ -593,11 +593,13 @@ function EmployeesPanel() {
               <Plus className="h-4 w-4 mr-2" /> Nuevo colaborador
             </Button>
           </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
+          <DialogContent className="max-h-[90dvh] flex flex-col">
+            <DialogHeader className="shrink-0">
               <DialogTitle>{editing ? "Editar colaborador" : "Nuevo colaborador"}</DialogTitle>
             </DialogHeader>
-            <div className="space-y-3">
+            {/* Campos con scroll propio: en teléfonos el formulario es alto (cédula,
+                polivalente, foto) y el footer Guardar debe quedar siempre visible. */}
+            <div className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-1 -mr-1">
               <div>
                 <Label>Código de empleado</Label>
                 <Input
@@ -734,7 +736,7 @@ function EmployeesPanel() {
                 Activo
               </label>
             </div>
-            <DialogFooter>
+            <DialogFooter className="shrink-0 border-t border-border pt-3">
               <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
               <Button onClick={save} className="bg-accent text-accent-foreground hover:bg-accent/90">
                 Guardar
