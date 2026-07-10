@@ -25,11 +25,6 @@ type Rec = {
 // Nicaragua = UTC-6 todo el año (sin horario de verano desde 2006).
 const NI_OFFSET_MS = 6 * 3600 * 1000;
 const DOW_ES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
-// Duración máxima de un turno para emparejar entrada→salida como UN solo turno. Se sube
-// a 20 h (antes 14 h) para soportar el "doble turno" de cobertura (un agente que cubre el
-// turno siguiente marca una sola entrada y una sola salida ≈ 16 h). Pasado esto, un
-// marcaje abierto se considera olvido (una salida olvidada suele exceder las 20 h).
-const MAX_SHIFT_MS = 20 * 3600 * 1000;
 
 /** Fecha local (yyyy-mm-dd) y hora local (0-23) de Nicaragua para un timestamp UTC. */
 function managuaParts(iso: string): { date: string; hour: number } {
@@ -462,7 +457,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
         if (r.type === "entrada") {
           if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() > 10 * 60 * 1000) evalShift(open, null);
           open = r;
-        } else if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() <= MAX_SHIFT_MS) {
+        } else if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() <= 14 * 3600 * 1000) {
           evalShift(open, r); open = null;
         } else { open = null; }
       }
@@ -1301,9 +1296,7 @@ export const setStoreStaffing = createServerFn({ method: "POST" })
 // Horarios esperados (entrada): Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00.
 
 const LATE_TOLERANCE_MIN = 5;
-// Antes 14 h; ahora usa el tope global (20 h) para no marcar "olvido" falso en un doble
-// turno de cobertura (marcaje único ≈ 16 h). Ver MAX_SHIFT_MS.
-const SHIFT_MAX_MS = MAX_SHIFT_MS;
+const SHIFT_MAX_MS = 14 * 3600 * 1000;
 
 /** Inicio esperado (min desde medianoche) y turno, según rol y hora de entrada. */
 function expectedStart(role: string, mins: number): { start: number; turno: "AM" | "PM" } {
