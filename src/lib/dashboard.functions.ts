@@ -681,13 +681,17 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
 
     const { data: rows } = await supabaseAdmin
       .from("attendance_records")
-      .select("created_at, notes, area, employee:employees!employee_id(id, full_name, role)")
+      .select("created_at, notes, area, cobertura, employee:employees!employee_id(id, full_name, role, store_id)")
       .eq("store_id", data.storeId)
       .eq("type", "entrada")
       .gte("created_at", fromUTC.toISOString())
       .lt("created_at", toUTC.toISOString())
       .order("created_at", { ascending: true })
       .limit(5000);
+
+    // Código de la tienda de origen (para marcar coberturas de otra tienda en el horario).
+    const { data: storesData } = await supabaseAdmin.from("stores").select("id, code");
+    const storeCodeById = new Map((storesData ?? []).map((s) => [s.id as string, s.code as string]));
 
     // 7 columnas: lunes..domingo (fechas locales).
     const days = Array.from({ length: 7 }, (_, i) => {
@@ -707,8 +711,10 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
       { key: "TERC_PM", cat: "TERC" as SchedCat, shift: "PM" as const, label: "Seguridad Tercerizada PM" },
     ];
     // Dedup por colaborador (id), no por nombre, para no colapsar homónimos.
-    const buckets: Record<string, Array<Map<string, string>>> = {};
-    for (const r of rowDefs) buckets[r.key] = days.map(() => new Map<string, string>());
+    // Cada persona lleva si es COBERTURA (de otra tienda) y su tienda de origen.
+    type Person = { name: string; cover: boolean; home: string | null };
+    const buckets: Record<string, Array<Map<string, Person>>> = {};
+    for (const r of rowDefs) buckets[r.key] = days.map(() => new Map<string, Person>());
 
     for (const rec of rows ?? []) {
       const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
@@ -720,6 +726,11 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
       if (!cat) continue; // gerente_zona u otros: fuera del roster
       const shift = scheduleShift(cat, hour);
       const key = `${cat}_${shift}`;
+      // Cobertura: el colaborador es de otra tienda (marcado en el marcaje o por su
+      // tienda base ≠ esta). No aplica a la Tercerizada (cuenta compartida por tienda).
+      const empStore = emp.store_id as string | null;
+      const isCover = cat !== "TERC" && (!!rec.cobertura || (!!empStore && empStore !== data.storeId));
+      const home = isCover ? (storeCodeById.get(empStore as string) ?? null) : null;
       // Para Seguridad Tercerizada (usuario compartido) agrupamos por NOMBRE del
       // guarda capturado en el marcaje, no por el usuario; así se ven los distintos.
       let identity = emp.id as string;
@@ -728,7 +739,7 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
         const gn = guardNameFromNotes(rec.notes as string | null);
         if (gn) { identity = `g:${gn.toLowerCase()}`; display = gn; }
       }
-      buckets[key][di].set(identity, display);
+      buckets[key][di].set(identity, { name: display, cover: isCover, home });
     }
 
     const gridRows = rowDefs.map((r) => ({
@@ -738,7 +749,7 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
       label: r.label,
       cells: buckets[r.key].map((m, i) => ({
         date: days[i].date,
-        people: [...m.entries()].map(([id, name]) => ({ id, name })),
+        people: [...m.entries()].map(([id, v]) => ({ id, name: v.name, cover: v.cover, home: v.home })),
       })),
     }));
 
@@ -767,6 +778,9 @@ export const getSchedulePrint = createServerFn({ method: "POST" })
 
     const { data: store } = await supabaseAdmin
       .from("stores").select("code, name").eq("id", data.storeId).maybeSingle();
+    // Código de la tienda de origen (para marcar coberturas de otra tienda).
+    const { data: allStores } = await supabaseAdmin.from("stores").select("id, code");
+    const storeCodeById = new Map((allStores ?? []).map((s) => [s.id as string, s.code as string]));
 
     // Lunes 00:00 NI de la semana inicial (misma lógica que getWeeklySchedule).
     let mondayLocal: Date;
@@ -794,7 +808,7 @@ export const getSchedulePrint = createServerFn({ method: "POST" })
     // Entradas Y salidas (la salida se usa para las horas de los tercerizados).
     const { data: rows } = await supabaseAdmin
       .from("attendance_records")
-      .select("created_at, type, notes, area, employee:employees!employee_id(id, full_name, role)")
+      .select("created_at, type, notes, area, cobertura, employee:employees!employee_id(id, full_name, role, store_id)")
       .eq("store_id", data.storeId)
       .gte("created_at", fromBufUTC.toISOString())
       .lt("created_at", toBufUTC.toISOString())
@@ -807,9 +821,11 @@ export const getSchedulePrint = createServerFn({ method: "POST" })
     });
     const dateToGi = new Map(allDays.map((d, i) => [d.date, i] as const));
 
-    // Generales: weekGeneral[w][`${rowKey}|${dayInWeek}`] = Map<id, nombre>
+    // Generales: weekGeneral[w][`${rowKey}|${dayInWeek}`] = Map<id, Person>.
+    // Cada persona lleva si es COBERTURA (de otra tienda) y su tienda de origen.
+    type Person = { name: string; cover: boolean; home: string | null };
     const weekGeneral = Array.from({ length: data.weeks }, () => {
-      const b: Record<string, Map<string, string>> = {};
+      const b: Record<string, Map<string, Person>> = {};
       for (const rd of SCHED_ROW_DEFS) for (let di = 0; di < 7; di++) b[`${rd.key}|${di}`] = new Map();
       return b;
     });
@@ -836,7 +852,10 @@ export const getSchedulePrint = createServerFn({ method: "POST" })
       const gi = dateToGi.get(date);
       if (gi === undefined) continue;
       const shift = scheduleShift(cat, hour);
-      weekGeneral[Math.floor(gi / 7)][`${cat}_${shift}|${gi % 7}`]?.set(emp.id as string, (emp.full_name as string) ?? "—");
+      const empStore = emp.store_id as string | null;
+      const isCover = !!rec.cobertura || (!!empStore && empStore !== data.storeId);
+      const home = isCover ? (storeCodeById.get(empStore as string) ?? null) : null;
+      weekGeneral[Math.floor(gi / 7)][`${cat}_${shift}|${gi % 7}`]?.set(emp.id as string, { name: (emp.full_name as string) ?? "—", cover: isCover, home });
     }
 
     // Pareo GLOBAL de tercerizados por guarda (cruza medianoche y semanas). Cada turno
@@ -879,7 +898,7 @@ export const getSchedulePrint = createServerFn({ method: "POST" })
         label: rd.label,
         cells: wdays.map((d, di) => ({
           date: d.date,
-          people: [...(weekGeneral[w][`${rd.key}|${di}`] ?? new Map()).entries()].map(([id, name]) => ({ id, name })),
+          people: [...(weekGeneral[w][`${rd.key}|${di}`] ?? new Map()).entries()].map(([id, v]) => ({ id, name: v.name, cover: v.cover, home: v.home })),
         })),
       }));
       const terc = wdays.map((d) => ({

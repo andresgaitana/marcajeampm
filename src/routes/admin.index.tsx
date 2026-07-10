@@ -1447,7 +1447,7 @@ function openPrintDoc(win: Window, title: string, innerHtml: string) {
   win.document.close();
 }
 type PrintDay = { date: string; label: string; dayNum: string };
-type PrintRow = { key: string; label: string; cells: Array<{ date: string; people: Array<{ id: string; name: string }> }> };
+type PrintRow = { key: string; label: string; cells: Array<{ date: string; people: Array<{ id: string; name: string; cover: boolean; home: string | null }> }> };
 type PrintTercShift = { name: string; entrada: string | null; salida: string | null; horas: number | null };
 type PrintTercDay = { date: string; label: string; dayNum: string; shifts: PrintTercShift[] };
 type PrintWeek = { weekStart: string; weekEnd: string; days: PrintDay[]; rows: PrintRow[]; terc: PrintTercDay[] };
@@ -1461,7 +1461,7 @@ function buildSchedulePrintHtml(data: SchedulePrintData): string {
       const col = SCHED_PRINT_COLORS[r.key] ?? neutral;
       const cells = r.cells.map((c) =>
         `<td>${c.people.length
-          ? c.people.map((p) => `<span class="chip" style="background:${col.bg};color:${col.text};border-color:${col.border}">${escHtml(p.name)}</span>`).join("")
+          ? c.people.map((p) => `<span class="chip" style="background:${col.bg};color:${col.text};border-color:${col.border}${p.cover ? ";border-style:dashed" : ""}">${escHtml(p.name)}${p.cover ? ` · cob. ${escHtml(p.home ?? "otra")}` : ""}</span>`).join("")
           : '<span class="dash">—</span>'}</td>`,
       ).join("");
       return `<tr><td class="rl" style="color:${col.label}">${escHtml(r.label)}</td>${cells}</tr>`;
@@ -1642,7 +1642,14 @@ function WeeklySchedulePanel() {
                         ) : (
                           <div className="flex flex-col gap-1">
                             {cell.people.map((p) => (
-                              <span key={p.id} className={`text-xs rounded-md border px-2 py-1 ${st.chip}`}>{p.name}</span>
+                              <span
+                                key={p.id}
+                                className={`text-xs rounded-md border px-2 py-1 ${st.chip} ${p.cover ? "border-dashed font-medium" : ""}`}
+                                title={p.cover ? `Cobertura — agente de ${p.home ?? "otra tienda"}` : undefined}
+                              >
+                                {p.name}
+                                {p.cover && <span className="ml-1 opacity-80">· cob. {p.home ?? "otra"}</span>}
+                              </span>
                             ))}
                           </div>
                         )}
