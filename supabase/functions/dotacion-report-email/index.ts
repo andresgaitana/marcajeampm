@@ -37,7 +37,10 @@ function buildHtml(rows: any[], corte: string, dateLabel: string) {
   };
   const trs = rows.map((r) => {
     const ready = r.prodReal >= r.prodPlan && r.mbkReal >= r.mbkPlan;
-    return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee"><b>${r.code}</b> ${r.name}</td>` +
+    const coverNote = r.covers && r.covers.length
+      ? `<br><span style="color:#8A5A00;font-size:12px">↩ Cobertura: ${r.covers.map((c: any) => `${c.name} (${c.home})`).join(", ")}</span>`
+      : "";
+    return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee"><b>${r.code}</b> ${r.name}${coverNote}</td>` +
       `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${fmt(r.prodReal, r.prodPlan)}</td>` +
       `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${fmt(r.mbkReal, r.mbkPlan)}</td>` +
       `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;color:${ready ? "#137A4B" : "#B45309"};font-weight:600">${ready ? "Listo" : "Falta"}</td></tr>`;
@@ -49,7 +52,8 @@ function buildHtml(rows: any[], corte: string, dateLabel: string) {
     `<th style="padding:6px 10px;text-align:left">Tienda</th><th style="padding:6px 10px;text-align:right">Productos</th>` +
     `<th style="padding:6px 10px;text-align:right">MBK</th><th style="padding:6px 10px;text-align:center">Estado</th>` +
     `</tr></thead><tbody>${trs}</tbody></table>` +
-    `<p style="color:#888;font-size:12px;margin-top:12px">Verde = cubierto · Ámbar = falta. "Listo" solo si Productos y MBK están cubiertos.</p></div>`;
+    `<p style="color:#888;font-size:12px;margin-top:12px">Verde = cubierto · Ámbar = falta. "Listo" solo si Productos y MBK están cubiertos. ` +
+    `↩ Cobertura = agente de otra tienda cubriendo aquí (su tienda de origen entre paréntesis).</p></div>`;
 }
 
 Deno.serve(async (req) => {
@@ -78,8 +82,8 @@ Deno.serve(async (req) => {
     const parts = await Promise.all([
       supabase.from("stores").select("id, code, name, zone_id").eq("active", true),
       supabase.from("store_staffing").select("store_id, prod_agents, mbk_agents"),
-      supabase.from("employees").select("id, role").eq("active", true).in("role", ["cajero", "agente_mbk"]),
-      supabase.from("attendance_records").select("created_at, employee_id, store_id, area").eq("type", "entrada").gte("created_at", startTodayISO),
+      supabase.from("employees").select("id, role, store_id, full_name").eq("active", true).in("role", ["cajero", "agente_mbk"]),
+      supabase.from("attendance_records").select("created_at, employee_id, store_id, area, cobertura").eq("type", "entrada").gte("created_at", startTodayISO),
       supabase.from("user_roles").select("user_id, role"),
       supabase.from("user_zone_assignments").select("user_id, zone_id"),
       supabase.from("store_managers").select("user_id, store_id"),
@@ -95,10 +99,14 @@ Deno.serve(async (req) => {
 
     const staffMap = new Map(staffing.map((x: any) => [x.store_id, x]));
     const roleById = new Map(emps.map((e: any) => [e.id, e.role]));
+    const empById = new Map(emps.map((e: any) => [e.id, e]));
+    const storeCodeById = new Map(stores.map((s: any) => [s.id, s.code]));
     const bandProdAM = (h: number) => h >= 5 && h < 17;
     const bandMbkAM = (h: number) => h >= 5 && h < 13;
     const prodSet = new Map<string, Set<string>>();
     const mbkSet = new Map<string, Set<string>>();
+    // Coberturas contadas en el corte, por tienda receptora (dedupe por colaborador).
+    const coverByStore = new Map<string, Map<string, { name: string; home: string }>>();
     for (const r of recs) {
       const role = roleById.get(r.employee_id);
       // Área operativa: la registrada en el marcaje (polivalente/cobertura) tiene
@@ -117,6 +125,13 @@ Deno.serve(async (req) => {
         if (!mbkSet.has(r.store_id)) mbkSet.set(r.store_id, new Set());
         mbkSet.get(r.store_id)!.add(r.employee_id);
       }
+      // Si el que se contó es de otra tienda (cobertura), registrarlo para la nota.
+      const emp: any = empById.get(r.employee_id);
+      const isCover = !!r.cobertura || (emp && emp.store_id && emp.store_id !== r.store_id);
+      if (isCover) {
+        if (!coverByStore.has(r.store_id)) coverByStore.set(r.store_id, new Map());
+        coverByStore.get(r.store_id)!.set(r.employee_id, { name: emp?.full_name ?? "Agente", home: storeCodeById.get(emp?.store_id) ?? "otra" });
+      }
     }
 
     const rowByStore = new Map<string, any>();
@@ -124,7 +139,7 @@ Deno.serve(async (req) => {
     for (const s of stores) {
       const st: any = staffMap.get(s.id);
       const pl = dotacionPlan(st?.prod_agents ?? 0, st?.mbk_agents ?? 0, dow);
-      rowByStore.set(s.id, { code: s.code, name: s.name, prodReal: prodSet.get(s.id)?.size ?? 0, prodPlan: corte === "AM" ? pl.prodAm : pl.prodPm, mbkReal: mbkSet.get(s.id)?.size ?? 0, mbkPlan: corte === "AM" ? pl.mbkAm : pl.mbkPm });
+      rowByStore.set(s.id, { code: s.code, name: s.name, prodReal: prodSet.get(s.id)?.size ?? 0, prodPlan: corte === "AM" ? pl.prodAm : pl.prodPm, mbkReal: mbkSet.get(s.id)?.size ?? 0, mbkPlan: corte === "AM" ? pl.mbkAm : pl.mbkPm, covers: [...(coverByStore.get(s.id)?.values() ?? [])] });
       if (s.zone_id) { if (!zoneStores.has(s.zone_id)) zoneStores.set(s.zone_id, []); zoneStores.get(s.zone_id)!.push(s.id); }
     }
     const allStoreIds = stores.map((s: any) => s.id);
