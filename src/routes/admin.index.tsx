@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1216,8 +1216,13 @@ function ScoreBadge({ n }: { n: number }) {
 function KpiPanel() {
   const kpiFn = useServerFn(getAttendanceKpis);
   const filter = useStoreFilter();
-  const [weekStart, setWeekStart] = useState(() => addDaysISO(evalWeekStart(todayNI()), -7));
+  // Semana por defecto = la ya CERRADA (Sáb→Vie anterior), para evaluar el sábado.
+  const defaultWeek = addDaysISO(evalWeekStart(todayNI()), -7);
+  const [weekStart, setWeekStart] = useState(defaultWeek);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // Si el usuario navega semanas a mano, dejamos de auto-saltar (para no rebotarlo).
+  const userPickedWeek = useRef(false);
+  const gotoWeek = (w: string) => { userPickedWeek.current = true; setWeekStart(w); };
 
   const args: { weekStart: string; storeId?: string; zoneId?: string } = { weekStart };
   if (filter.storeId !== "all") args.storeId = filter.storeId;
@@ -1229,6 +1234,18 @@ function KpiPanel() {
   });
   const rows = data?.rows ?? [];
   const weekEnd = addDaysISO(weekStart, 6);
+  // Se auto-saltó a una semana con datos (no la de cierre) sin que el usuario navegara.
+  const autoJumped = !userPickedWeek.current && weekStart !== defaultWeek;
+
+  // Tiendas/zonas nuevas: si la semana por defecto está VACÍA pero hay datos en otra
+  // semana del alcance, saltar automáticamente a la más reciente con datos (una vez, y
+  // solo si el usuario no ha navegado a mano).
+  useEffect(() => {
+    if (userPickedWeek.current || !data) return;
+    if (data.rows.length > 0) return;
+    const lw = data.latestDataWeek;
+    if (lw && lw !== weekStart) setWeekStart(lw);
+  }, [data, weekStart]);
 
   const exportCsv = () => {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
@@ -1253,13 +1270,18 @@ function KpiPanel() {
         <div className="min-w-0">
           <h2 className="text-xl font-bold text-foreground">KPI de Asistencia y Puntualidad</h2>
           <p className="text-sm text-muted-foreground">Para la evaluación semanal de caja y MBK. Nota sugerida 1-5 por KPI.</p>
+          {autoJumped && (
+            <p className="text-xs text-amber-700 mt-0.5">
+              La semana de cierre aún no tiene marcajes en este alcance; mostrando la semana con datos más reciente ({fmtDM(weekStart)}–{fmtDM(weekEnd)}).
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {filter.bar}
           <div className="flex items-center gap-1">
-            <Button variant="outline" size="sm" onClick={() => setWeekStart(addDaysISO(weekStart, -7))}>‹</Button>
+            <Button variant="outline" size="sm" onClick={() => gotoWeek(addDaysISO(weekStart, -7))}>‹</Button>
             <span className="text-sm font-medium tabular-nums w-24 text-center">{fmtDM(weekStart)} – {fmtDM(weekEnd)}</span>
-            <Button variant="outline" size="sm" onClick={() => setWeekStart(addDaysISO(weekStart, 7))}>›</Button>
+            <Button variant="outline" size="sm" onClick={() => gotoWeek(addDaysISO(weekStart, 7))}>›</Button>
           </div>
           <Button variant="outline" size="sm" onClick={exportCsv} disabled={rows.length === 0}>
             <Download className="h-4 w-4 mr-1" /> Exportar Excel

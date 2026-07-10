@@ -1241,7 +1241,28 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
     const stores = storesData ?? [];
     const storeIds = stores.map((s) => s.id as string);
     const storeCode = new Map(stores.map((s) => [s.id as string, s.code as string]));
-    if (!storeIds.length) return { weekStart, rows: [] };
+    if (!storeIds.length) return { weekStart, rows: [], latestDataWeek: null };
+
+    // Semana de evaluación (sábado) MÁS RECIENTE con actividad de caja/MBK en el alcance.
+    // Sirve para que una tienda/zona nueva —cuya semana cerrada por defecto aún está
+    // vacía— caiga automáticamente en la semana que sí tiene sus datos.
+    let latestDataWeek: string | null = null;
+    {
+      const { data: cajeros } = await supabaseAdmin
+        .from("employees").select("id").in("role", ["cajero", "agente_mbk"]);
+      const cajeroIds = new Set((cajeros ?? []).map((e) => e.id as string));
+      const { data: recent } = await supabaseAdmin
+        .from("attendance_records").select("created_at, employee_id")
+        .eq("type", "entrada").in("store_id", storeIds)
+        .order("created_at", { ascending: false }).limit(300);
+      const hit = (recent ?? []).find((r) => cajeroIds.has(r.employee_id as string));
+      if (hit) {
+        // Ancla al sábado 04:00 NI de esa semana (mismo corte que la evaluación).
+        const local = new Date(new Date(hit.created_at as string).getTime() - NI_OFFSET_MS - CUT_HOUR * 3600 * 1000);
+        local.setUTCDate(local.getUTCDate() - ((local.getUTCDay() + 1) % 7));
+        latestDataWeek = local.toISOString().slice(0, 10);
+      }
+    }
 
     const { data: recs } = await supabaseAdmin
       .from("attendance_records")
@@ -1347,5 +1368,5 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
       };
     }).sort((a, b) => (a.store < b.store ? -1 : a.store > b.store ? 1 : a.name.localeCompare(b.name)));
 
-    return { weekStart, rows };
+    return { weekStart, rows, latestDataWeek };
   });
