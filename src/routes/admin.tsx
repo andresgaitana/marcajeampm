@@ -133,7 +133,7 @@ function AdminLayout() {
           </div>
         </div>
       </header>
-      <main className="max-w-7xl mx-auto p-4 md:p-6">
+      <main className="max-w-7xl mx-auto p-3 sm:p-4 md:p-6 overflow-x-hidden">
         <Outlet />
       </main>
     </div>

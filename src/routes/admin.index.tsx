@@ -1790,14 +1790,14 @@ function DashboardPanel() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {filter.bar}
-          <div className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1">
+          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border px-2 py-1">
             <span className="text-xs text-muted-foreground shrink-0">Descarga:</span>
             <Input
               type="date"
               value={expFrom}
               max={expTo || undefined}
               onChange={(e) => setExpFrom(e.target.value)}
-              className="h-8 w-[8.5rem]"
+              className="h-8 w-[7.5rem]"
               title="Desde"
             />
             <span className="text-xs text-muted-foreground">a</span>
@@ -1806,7 +1806,7 @@ function DashboardPanel() {
               value={expTo}
               min={expFrom || undefined}
               onChange={(e) => setExpTo(e.target.value)}
-              className="h-8 w-[8.5rem]"
+              className="h-8 w-[7.5rem]"
               title="Hasta"
             />
             <Button variant="outline" size="sm" onClick={doExport} disabled={exporting} title="Descargar los marcajes del rango elegido (Excel/CSV)">
@@ -1824,7 +1824,7 @@ function DashboardPanel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {isStore ? (
           <>
             <KPI label="Dotación (agentes)" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% del plan`} accent="entry" />
