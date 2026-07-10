@@ -228,11 +228,12 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     // colaboradores con alcance de tienda (si no, una cobertura se cae del conteo y el
     // Dashboard no cuadra con la pestaña Dotación, que lee el rol del propio marcaje).
     const recEmpIds = [...new Set(records.map((r) => r.employee_id))];
-    const roleById = new Map<string, string>();
+    const empInfoById = new Map<string, { role: string; name: string; code: string }>();
     if (recEmpIds.length) {
-      const { data: roleRows } = await supabaseAdmin.from("employees").select("id, role").in("id", recEmpIds);
-      for (const e of roleRows ?? []) roleById.set(e.id as string, e.role as string);
+      const { data: roleRows } = await supabaseAdmin.from("employees").select("id, role, full_name, employee_code").in("id", recEmpIds);
+      for (const e of roleRows ?? []) empInfoById.set(e.id as string, { role: e.role as string, name: (e.full_name as string) ?? "—", code: (e.employee_code as string) ?? "" });
     }
+    const roleById = new Map<string, string>([...empInfoById].map(([id, v]) => [id, v.role]));
     const { data: stf } = await supabaseAdmin.from("store_staffing").select("store_id, prod_agents, mbk_agents");
     const staffMap = new Map((stf ?? []).map((x) => [x.store_id as string, x]));
     const planFor = (sid: string, dow: number) => {
@@ -353,6 +354,117 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       .filter((e) => !presentIds.has(e.id))
       .map((e) => ({ id: e.id, full_name: e.full_name, employee_code: e.employee_code, role: e.role }));
 
+    // ───────── Personas en el turno actual (headcount por tipo, informativo) ─────────
+    // Agentes: cuentan si marcaron en el corte ACTUAL. No-agentes (GT/Limpieza/Seguridad):
+    // cuentan por marcar hoy (operan a diario, sin corte AM/PM).
+    const typeOf = (role: string, area: string | null | undefined): string | null => {
+      if (role === "cajero" || role === "agente_mbk") return effectiveArea(area, role) === "mbk" ? "MBK" : "Productos";
+      if (role === "gerente") return "Gerente de tienda";
+      if (role === "personal_limpieza") return "Limpieza";
+      if (role === "seguridad_interna" || role === "seguridad") return "Seguridad interna";
+      if (role === "seguridad_tercerizada") return "Seguridad tercerizada";
+      return null;
+    };
+    const TURNO_TYPES = ["Productos", "MBK", "Gerente de tienda", "Limpieza", "Seguridad interna", "Seguridad tercerizada"];
+    const turnoByType = new Map<string, Set<string>>(TURNO_TYPES.map((t) => [t, new Set<string>()]));
+    for (const r of todayRecs) {
+      if (r.type !== "entrada") continue;
+      const info = empInfoById.get(r.employee_id);
+      if (!info) continue;
+      const t = typeOf(info.role, r.area);
+      if (!t) continue;
+      if (t === "Productos" || t === "MBK") {
+        const hour = managuaParts(r.created_at).hour;
+        const recCorte = t === "MBK" ? (hour >= 5 && hour < 13 ? "AM" : "PM") : (hour >= 5 && hour < 17 ? "AM" : "PM");
+        if (recCorte !== (t === "MBK" ? mbkCorte : prodCorte)) continue;
+      }
+      turnoByType.get(t)!.add(r.employee_id);
+    }
+    const personas_turno = {
+      total: new Set<string>([...turnoByType.values()].flatMap((s) => [...s])).size,
+      by_type: TURNO_TYPES.map((t) => ({ tipo: t, count: turnoByType.get(t)!.size })),
+    };
+
+    // ───────── Marcaron tarde hoy (agentes) ─────────
+    // Por (empleado, turno) la entrada más temprana; tarde si supera inicio + tolerancia.
+    const lateShift = new Map<string, { id: string; name: string; code: string; area: string; turno: "AM" | "PM"; mins: number; start: number }>();
+    for (const r of todayRecs) {
+      if (r.type !== "entrada") continue;
+      const info = empInfoById.get(r.employee_id);
+      if (!info || (info.role !== "cajero" && info.role !== "agente_mbk")) continue;
+      const local = new Date(new Date(r.created_at).getTime() - NI_OFFSET_MS);
+      const mins = local.getUTCHours() * 60 + local.getUTCMinutes();
+      const { start, turno } = expectedStart(info.role, mins);
+      const key = `${r.employee_id}|${turno}`;
+      const cur = lateShift.get(key);
+      if (!cur || mins < cur.mins) {
+        lateShift.set(key, {
+          id: r.employee_id, name: info.name, code: info.code,
+          area: effectiveArea(r.area, info.role) === "mbk" ? "MBK" : "Productos",
+          turno, mins, start,
+        });
+      }
+    }
+    const late_today = [...lateShift.values()]
+      .filter((s) => s.mins - s.start > LATE_TOLERANCE_MIN)
+      .map((s) => ({
+        id: s.id, name: s.name, code: s.code, area: s.area, turno: s.turno,
+        hora: `${String(Math.floor(s.mins / 60)).padStart(2, "0")}:${String(s.mins % 60).padStart(2, "0")}`,
+        atraso: s.mins - s.start,
+      }))
+      .sort((a, b) => b.atraso - a.atraso);
+
+    // ───────── Salidas fuera de hora / posible tiempo extra (agentes) ─────────
+    // Empareja entrada→salida por agente en las últimas ~26 h y compara la salida (o el
+    // "sigue dentro") contra el fin del turno + tolerancia (OT_TOL).
+    const OT_TOL = 15;
+    const nowMs = Date.now();
+    const recentByEmp = new Map<string, Rec[]>();
+    for (const r of records) {
+      if (nowMs - new Date(r.created_at).getTime() > 26 * 3600 * 1000) continue;
+      const info = empInfoById.get(r.employee_id);
+      if (!info || (info.role !== "cajero" && info.role !== "agente_mbk")) continue;
+      if (!recentByEmp.has(r.employee_id)) recentByEmp.set(r.employee_id, []);
+      recentByEmp.get(r.employee_id)!.push(r);
+    }
+    const overtime_today: Array<{ id: string; name: string; code: string; area: string; turno: "AM" | "PM"; cierre: string; salida: string | null; extra: number; dentro: boolean }> = [];
+    for (const [empId, recs] of recentByEmp) {
+      const info = empInfoById.get(empId)!;
+      recs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      const evalShift = (entrada: Rec, salida: Rec | null) => {
+        const local = new Date(new Date(entrada.created_at).getTime() - NI_OFFSET_MS);
+        const mins = local.getUTCHours() * 60 + local.getUTCMinutes();
+        const area = effectiveArea(entrada.area, info.role) === "mbk" ? "mbk" : "productos";
+        const { turno } = expectedStart(info.role, mins);
+        const { end, nextDay } = expectedEnd(area, turno);
+        const dayMid = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+        const endAbsMs = dayMid + (end + (nextDay ? 1440 : 0)) * 60000 + NI_OFFSET_MS;
+        const areaLbl = area === "mbk" ? "MBK" : "Productos";
+        const cierre = `${areaLbl} ${turno} · ${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`;
+        if (salida) {
+          const extra = Math.round((new Date(salida.created_at).getTime() - endAbsMs) / 60000);
+          if (extra > OT_TOL) {
+            const sl = new Date(new Date(salida.created_at).getTime() - NI_OFFSET_MS);
+            overtime_today.push({ id: empId, name: info.name, code: info.code, area: areaLbl, turno, cierre, salida: `${String(sl.getUTCHours()).padStart(2, "0")}:${String(sl.getUTCMinutes()).padStart(2, "0")}`, extra, dentro: false });
+          }
+        } else {
+          const extra = Math.round((nowMs - endAbsMs) / 60000);
+          if (extra > OT_TOL) overtime_today.push({ id: empId, name: info.name, code: info.code, area: areaLbl, turno, cierre, salida: null, extra, dentro: true });
+        }
+      };
+      let open: Rec | null = null;
+      for (const r of recs) {
+        if (r.type === "entrada") {
+          if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() > 10 * 60 * 1000) evalShift(open, null);
+          open = r;
+        } else if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() <= 14 * 3600 * 1000) {
+          evalShift(open, r); open = null;
+        } else { open = null; }
+      }
+      if (open) evalShift(open, null);
+    }
+    overtime_today.sort((a, b) => b.extra - a.extra);
+
     return {
       today_entries: todayEntries,
       today_exits: todayExits,
@@ -375,6 +487,9 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       employees_total: employeesTotal,
       present_today: presentToday,
       attendance_pct: attendancePct,
+      personas_turno,
+      late_today,
+      overtime_today,
       dotacion_today: dotacionToday,
       dotacion_week: dotacionWeek,
       prod_corte: prodCorte,
@@ -1177,6 +1292,13 @@ function expectedStart(role: string, mins: number): { start: number; turno: "AM"
   }
   // Productos (cajero): AM 6:00 (entradas 4:00–16:00) / PM 18:00 (resto)
   return mins >= 240 && mins < 960 ? { start: 360, turno: "AM" } : { start: 1080, turno: "PM" };
+}
+
+/** Fin esperado del turno (min desde medianoche del día operativo) por área y turno.
+ * Productos AM 6→18, PM 18→6 (día siguiente); MBK AM 6→14, PM 14→22. */
+function expectedEnd(area: "productos" | "mbk", turno: "AM" | "PM"): { end: number; nextDay: boolean } {
+  if (area === "mbk") return turno === "AM" ? { end: 14 * 60, nextDay: false } : { end: 22 * 60, nextDay: false };
+  return turno === "AM" ? { end: 18 * 60, nextDay: false } : { end: 6 * 60, nextDay: true };
 }
 
 /** # incidencias de puntualidad → nota 1-5 (rúbrica de evaluación). */

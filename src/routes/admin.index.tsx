@@ -1755,6 +1755,18 @@ function DashboardPanel() {
     queryFn: () => summaryFn({ data: { days } }),
   });
   const summaryRows = (summary ?? []).filter((e) => filter.matches(e.store_id));
+  // Agrupar la asistencia por tipo (rol) con subtotal de horas por tipo.
+  const summaryGroups = useMemo(() => {
+    const ORDER = ["cajero", "agente_mbk", "gerente", "gerente_zona", "personal_limpieza", "seguridad_interna", "seguridad", "seguridad_tercerizada"];
+    const oi = (r: string) => { const i = ORDER.indexOf(r); return i < 0 ? 999 : i; };
+    const g = new Map<string, typeof summaryRows>();
+    for (const r of summaryRows) { const arr = g.get(r.role) ?? []; arr.push(r); g.set(r.role, arr); }
+    return [...g.entries()].sort((a, b) => oi(a[0]) - oi(b[0])).map(([role, list]) => ({
+      role,
+      list: [...list].sort((x, y) => y.hours - x.hours),
+      hours: Math.round(list.reduce((s, x) => s + x.hours, 0) * 10) / 10,
+    }));
+  }, [summaryRows]);
 
   if (isLoading || !m) {
     return <div className="text-center py-12 text-muted-foreground">Cargando dashboard…</div>;
@@ -1815,17 +1827,17 @@ function DashboardPanel() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {isStore ? (
           <>
-            <KPI label="Dotación hoy" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% cubierto`} accent="entry" />
-            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% del total`} accent="muted" />
+            <KPI label="Dotación (agentes)" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% del plan`} accent="entry" />
+            <KPI label="Personas en el turno" value={m.personas_turno?.total ?? 0} sub="logeadas en el corte" accent="muted" />
             <KPI label="Dentro ahora" value={m.inside_now} accent="primary" />
-            <KPI label="Entradas hoy" value={m.today_entries} accent="exit" />
+            <KPI label="Marcaron tarde hoy" value={m.late_today?.length ?? 0} sub="entrada fuera de hora" accent="exit" />
           </>
         ) : (
           <>
             <KPI label={isSuper ? "Tiendas" : "Tiendas (mi zona)"} value={m.stores_count} accent="primary" />
-            <KPI label="Dotación hoy" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% cubierto`} accent="entry" />
-            <KPI label="Presentes hoy" value={m.present_today} sub={`${m.attendance_pct}% del total`} accent="muted" />
-            <KPI label="Dentro ahora" value={m.inside_now} accent="exit" />
+            <KPI label="Dotación (agentes)" value={`${m.dotacion_today?.real ?? 0}/${m.dotacion_today?.plan ?? 0}`} sub={`${m.dotacion_today?.pct ?? 0}% del plan`} accent="entry" />
+            <KPI label="Personas en el turno" value={m.personas_turno?.total ?? 0} sub="logeadas en el corte" accent="muted" />
+            <KPI label="Marcaron tarde hoy" value={m.late_today?.length ?? 0} sub="entrada fuera de hora" accent="exit" />
           </>
         )}
       </div>
@@ -1851,40 +1863,15 @@ function DashboardPanel() {
 
       {isStore && (
         <div className="grid lg:grid-cols-2 gap-4">
-          <div className="bg-card rounded-2xl border border-border overflow-hidden">
-            <div className="p-4 border-b border-border">
-              <h3 className="font-semibold text-foreground">Dotación cubierta — turno actual</h3>
-              <p className="text-xs text-muted-foreground">Productos + MBK presentes vs plan del corte</p>
-            </div>
-            <div className="flex items-end gap-3 px-4 pt-4">
-              <div className="text-5xl font-extrabold text-[oklch(0.6_0.16_155)] leading-none">{m.dotacion_today?.pct ?? 0}%</div>
-              <div className="text-sm text-muted-foreground pb-1">{m.dotacion_today?.real ?? 0} de {m.dotacion_today?.plan ?? 0} de la dotación · {m.inside_now} dentro</div>
-            </div>
-            <RoleTable rows={m.by_role} />
-          </div>
+          <TurnoTypeCard personas={m.personas_turno} />
           <InsideCard inside={m.inside} />
         </div>
       )}
 
-      {isStore && (
-        <div className="bg-card rounded-2xl border border-border overflow-hidden">
-          <div className="p-4 border-b border-border flex items-center gap-2">
-            <h3 className="font-semibold text-foreground">No han marcado hoy</h3>
-            <Badge variant="outline" className="border-amber-500 text-amber-700">{m.absent_today.length}</Badge>
-          </div>
-          {m.absent_today.length === 0 ? (
-            <p className="px-4 py-4 text-sm text-muted-foreground">Todos marcaron entrada. 🎉</p>
-          ) : (
-            <div className="p-4 flex flex-wrap gap-2">
-              {m.absent_today.map((a) => (
-                <span key={a.id} className="text-xs rounded-md border border-amber-200 bg-amber-50 text-amber-800 px-2 py-1">
-                  {a.full_name} <span className="font-mono opacity-70">{a.employee_code}</span>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="grid lg:grid-cols-2 gap-4">
+        <LateTodayCard rows={m.late_today} />
+        <OvertimeCard rows={m.overtime_today} />
+      </div>
 
       {isZone && (
         <div className="grid lg:grid-cols-2 gap-4">
@@ -1918,13 +1905,12 @@ function DashboardPanel() {
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
         <div className="p-4 border-b border-border">
           <h3 className="font-semibold text-foreground">Asistencia por colaborador</h3>
-          <p className="text-xs text-muted-foreground">Detalle del periodo · clic en una fila para ver la semana</p>
+          <p className="text-xs text-muted-foreground">Horas trabajadas por persona, agrupado por tipo · clic en una fila para ver el detalle diario</p>
         </div>
         <Table>
           <TableHeader>
             <TableRow className="bg-secondary/50">
               <TableHead>Colaborador</TableHead>
-              <TableHead>Rol</TableHead>
               <TableHead className="text-right">Días</TableHead>
               <TableHead className="text-right">Horas</TableHead>
               <TableHead className="text-right">Marcajes</TableHead>
@@ -1933,19 +1919,33 @@ function DashboardPanel() {
           </TableHeader>
           <TableBody>
             {summaryRows.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="text-center py-6 text-muted-foreground">Sin datos en el periodo.</TableCell></TableRow>
-            ) : summaryRows.map((e) => (
-              <TableRow key={e.id} className="cursor-pointer hover:bg-secondary/40" onClick={() => setOpenEmployee({ id: e.id, name: e.full_name })}>
-                <TableCell>
-                  <div className="font-medium text-foreground">{e.full_name}</div>
-                  <div className="text-xs text-muted-foreground font-mono">{e.employee_code}</div>
-                </TableCell>
-                <TableCell className="text-muted-foreground">{ROLE_LABELS[e.role as EmployeeRole] ?? e.role}</TableCell>
-                <TableCell className="text-right">{e.days_present}</TableCell>
-                <TableCell className="text-right font-medium">{e.hours}</TableCell>
-                <TableCell className="text-right text-muted-foreground">{e.marks}</TableCell>
-                <TableCell className="text-right"><ChevronRight className="h-4 w-4 text-muted-foreground inline" /></TableCell>
-              </TableRow>
+              <TableRow><TableCell colSpan={5} className="text-center py-6 text-muted-foreground">Sin datos en el periodo.</TableCell></TableRow>
+            ) : summaryGroups.map((g) => (
+              <Fragment key={g.role}>
+                <TableRow className="bg-secondary/40 hover:bg-secondary/40">
+                  <TableCell colSpan={5} className="text-xs font-semibold text-foreground uppercase tracking-wide">
+                    {ROLE_LABELS[g.role as EmployeeRole] ?? g.role}
+                  </TableCell>
+                </TableRow>
+                {g.list.map((e) => (
+                  <TableRow key={e.id} className="cursor-pointer hover:bg-secondary/40" onClick={() => setOpenEmployee({ id: e.id, name: e.full_name })}>
+                    <TableCell>
+                      <div className="font-medium text-foreground">{e.full_name}</div>
+                      <div className="text-xs text-muted-foreground font-mono">{e.employee_code}</div>
+                    </TableCell>
+                    <TableCell className="text-right">{e.days_present}</TableCell>
+                    <TableCell className="text-right font-medium">{e.hours}</TableCell>
+                    <TableCell className="text-right text-muted-foreground">{e.marks}</TableCell>
+                    <TableCell className="text-right"><ChevronRight className="h-4 w-4 text-muted-foreground inline" /></TableCell>
+                  </TableRow>
+                ))}
+                <TableRow>
+                  <TableCell className="text-xs text-muted-foreground pl-6">Subtotal {ROLE_LABELS[g.role as EmployeeRole] ?? g.role}</TableCell>
+                  <TableCell></TableCell>
+                  <TableCell className="text-right font-semibold">{g.hours} h</TableCell>
+                  <TableCell colSpan={2}></TableCell>
+                </TableRow>
+              </Fragment>
             ))}
           </TableBody>
         </Table>
@@ -1998,6 +1998,92 @@ function InsideCard({ inside }: { inside: Array<{ id: string; full_name: string;
           ))}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+function TurnoTypeCard({ personas }: { personas?: { total: number; by_type: Array<{ tipo: string; count: number }> } }) {
+  const rows = personas?.by_type ?? [];
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border">
+        <h3 className="font-semibold text-foreground">Personas en el turno actual</h3>
+        <p className="text-xs text-muted-foreground">Total logeado por tipo (informativo, sin plan)</p>
+      </div>
+      <Table>
+        <TableHeader><TableRow className="bg-secondary/50"><TableHead>Tipo</TableHead><TableHead className="text-right">Logeados</TableHead></TableRow></TableHeader>
+        <TableBody>
+          {rows.map((r) => (
+            <TableRow key={r.tipo}>
+              <TableCell className="text-foreground">{r.tipo}</TableCell>
+              <TableCell className="text-right">{r.count > 0 ? <span className="font-medium">{r.count}</span> : <span className="text-muted-foreground">—</span>}</TableCell>
+            </TableRow>
+          ))}
+          <TableRow className="bg-secondary/30">
+            <TableCell className="font-semibold text-foreground">Total en tienda</TableCell>
+            <TableCell className="text-right font-semibold">{personas?.total ?? 0}</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function LateTodayCard({ rows }: { rows?: Array<{ id: string; name: string; code: string; area: string; turno: string; hora: string; atraso: number }> }) {
+  const list = rows ?? [];
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border flex items-center gap-2">
+        <h3 className="font-semibold text-foreground">Marcaron tarde hoy</h3>
+        <Badge variant="outline" className="border-red-500 text-red-700">{list.length}</Badge>
+      </div>
+      {list.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-muted-foreground">Nadie marcó tarde hoy. 🎉</p>
+      ) : (
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50"><TableHead>Colaborador</TableHead><TableHead>Turno</TableHead><TableHead className="text-right">Entró</TableHead><TableHead className="text-right">Atraso</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {list.slice(0, 25).map((r) => (
+              <TableRow key={`${r.id}-${r.turno}`}>
+                <TableCell><div className="font-medium text-foreground">{r.name}</div><div className="text-xs text-muted-foreground font-mono">{r.code}</div></TableCell>
+                <TableCell className="text-sm text-muted-foreground">{r.area} {r.turno}</TableCell>
+                <TableCell className="text-right font-mono text-sm">{r.hora}</TableCell>
+                <TableCell className="text-right"><span className="text-xs font-medium rounded-md border border-red-200 bg-red-50 text-red-800 px-2 py-1">+{r.atraso} min</span></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </div>
+  );
+}
+
+function OvertimeCard({ rows }: { rows?: Array<{ id: string; name: string; code: string; area: string; turno: string; cierre: string; salida: string | null; extra: number; dentro: boolean }> }) {
+  const list = rows ?? [];
+  const fmtExtra = (mm: number) => (mm >= 60 ? `+${Math.floor(mm / 60)}:${String(mm % 60).padStart(2, "0")}` : `+${mm} min`);
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border flex items-center gap-2">
+        <h3 className="font-semibold text-foreground">Salidas fuera de hora — posible extra</h3>
+        <Badge variant="outline" className="border-amber-500 text-amber-700">{list.length}</Badge>
+      </div>
+      {list.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-muted-foreground">Sin salidas fuera de hora.</p>
+      ) : (
+        <Table>
+          <TableHeader><TableRow className="bg-secondary/50"><TableHead>Colaborador</TableHead><TableHead>Cierre</TableHead><TableHead className="text-right">Salió</TableHead><TableHead className="text-right">Extra</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {list.slice(0, 25).map((r) => (
+              <TableRow key={`${r.id}-${r.turno}-${r.salida ?? "in"}`}>
+                <TableCell><div className="font-medium text-foreground">{r.name}</div><div className="text-xs text-muted-foreground font-mono">{r.code}</div></TableCell>
+                <TableCell className="text-sm text-muted-foreground">{r.cierre}</TableCell>
+                <TableCell className="text-right text-sm">{r.dentro ? <span className="text-muted-foreground">dentro</span> : <span className="font-mono">{r.salida}</span>}</TableCell>
+                <TableCell className="text-right"><span className={`text-xs font-medium rounded-md border px-2 py-1 ${r.dentro ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{fmtExtra(r.extra)}</span></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </div>
   );
 }
@@ -2099,7 +2185,7 @@ function DotacionStoreTable({ rows, prodCorte, mbkCorte }: {
             <TableHead>Tienda</TableHead>
             <TableHead className="text-right">Productos</TableHead>
             <TableHead className="text-right">MBK</TableHead>
-            <TableHead className="text-right">{day ? "Estado" : "Cumplimiento"}</TableHead>
+            <TableHead className="text-right">Cumplimiento</TableHead>
           </TableRow></TableHeader>
           <TableBody>
             {rows.length === 0 ? (
@@ -2118,8 +2204,11 @@ function DotacionStoreTable({ rows, prodCorte, mbkCorte }: {
                   <TableCell className="text-right"><DotCoverCell real={mReal} plan={mPlan} /></TableCell>
                   <TableCell className="text-right">
                     {day ? (
-                      <span className={`text-xs font-medium rounded-md border px-2 py-1 ${ready ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
-                        {ready ? "Listo" : "Falta"}
+                      <span className="inline-flex items-center gap-2 justify-end">
+                        <span className={`text-sm font-semibold ${pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{pct}%</span>
+                        <span className={`text-xs font-medium rounded-md border px-2 py-1 ${ready ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+                          {ready ? "Listo" : "Falta"}
+                        </span>
                       </span>
                     ) : (
                       <span className={`text-sm font-semibold ${pct >= 100 ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>{pct}%</span>
