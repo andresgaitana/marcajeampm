@@ -31,29 +31,34 @@ function dotacionPlan(prod: number, mbk: number, dow: number) {
 
 // deno-lint-ignore no-explicit-any
 function buildHtml(rows: any[], corte: string, dateLabel: string) {
-  const fmt = (real: number, plan: number) => {
+  const cnt = (real: number, plan: number) => {
     const color = plan === 0 ? "#888" : real >= plan ? "#137A4B" : "#B45309";
-    return `<span style="color:${color};font-weight:600">${real}/${plan}</span>`;
+    return `<span style="color:${color};font-weight:700">${real}/${plan}</span>`;
   };
+  // Nombres de quienes marcaron; la cobertura (agente de otra tienda) se señala inline.
+  const nameList = (people: any[]) =>
+    people.length
+      ? people.map((p) => p.cover ? `<span style="color:#8A5A00">${p.name} <b>(cob. ${p.home})</b></span>` : p.name).join(", ")
+      : `<span style="color:#B45309">— nadie marcó —</span>`;
+  const cell = (real: number, plan: number, people: any[]) =>
+    `<td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top">${cnt(real, plan)}` +
+    `<div style="font-size:12px;color:#5B6B78;margin-top:2px">${nameList(people)}</div></td>`;
   const trs = rows.map((r) => {
     const ready = r.prodReal >= r.prodPlan && r.mbkReal >= r.mbkPlan;
-    const coverNote = r.covers && r.covers.length
-      ? `<br><span style="color:#8A5A00;font-size:12px">↩ Cobertura: ${r.covers.map((c: any) => `${c.name} (${c.home})`).join(", ")}</span>`
-      : "";
-    return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee"><b>${r.code}</b> ${r.name}${coverNote}</td>` +
-      `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${fmt(r.prodReal, r.prodPlan)}</td>` +
-      `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${fmt(r.mbkReal, r.mbkPlan)}</td>` +
-      `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;color:${ready ? "#137A4B" : "#B45309"};font-weight:600">${ready ? "Listo" : "Falta"}</td></tr>`;
+    return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top"><b>${r.code}</b> ${r.name}</td>` +
+      cell(r.prodReal, r.prodPlan, r.prodPeople ?? []) +
+      cell(r.mbkReal, r.mbkPlan, r.mbkPeople ?? []) +
+      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;vertical-align:top;color:${ready ? "#137A4B" : "#B45309"};font-weight:700">${ready ? "Listo" : "Falta"}</td></tr>`;
   }).join("");
   return `<div style="font-family:Segoe UI,Arial,sans-serif;color:#20303B">` +
     `<h2 style="color:#E8622A;margin:0 0 4px">Dotación real por tienda — Turno ${corte}</h2>` +
-    `<p style="color:#5B6B78;margin:0 0 12px">${dateLabel} · Agentes presentes (Productos y MBK) vs plan del corte.</p>` +
-    `<table style="border-collapse:collapse;width:100%;max-width:640px;font-size:14px"><thead><tr style="background:#F4F6F8">` +
-    `<th style="padding:6px 10px;text-align:left">Tienda</th><th style="padding:6px 10px;text-align:right">Productos</th>` +
-    `<th style="padding:6px 10px;text-align:right">MBK</th><th style="padding:6px 10px;text-align:center">Estado</th>` +
+    `<p style="color:#5B6B78;margin:0 0 12px">${dateLabel} · Quién marcó por área (Productos y MBK) vs plan del corte.</p>` +
+    `<table style="border-collapse:collapse;width:100%;max-width:680px;font-size:14px"><thead><tr style="background:#F4F6F8">` +
+    `<th style="padding:6px 10px;text-align:left">Tienda</th><th style="padding:6px 10px;text-align:left">Productos</th>` +
+    `<th style="padding:6px 10px;text-align:left">MBK</th><th style="padding:6px 10px;text-align:center">Estado</th>` +
     `</tr></thead><tbody>${trs}</tbody></table>` +
-    `<p style="color:#888;font-size:12px;margin-top:12px">Verde = cubierto · Ámbar = falta. "Listo" solo si Productos y MBK están cubiertos. ` +
-    `↩ Cobertura = agente de otra tienda cubriendo aquí (su tienda de origen entre paréntesis).</p></div>`;
+    `<p style="color:#888;font-size:12px;margin-top:10px">Verde = cubierto · Ámbar = falta. "Listo" solo si Productos y MBK están cubiertos. ` +
+    `(cob. XX) = agente de otra tienda cubriendo aquí.</p></div>`;
 }
 
 Deno.serve(async (req) => {
@@ -103,10 +108,11 @@ Deno.serve(async (req) => {
     const storeCodeById = new Map(stores.map((s: any) => [s.id, s.code]));
     const bandProdAM = (h: number) => h >= 5 && h < 17;
     const bandMbkAM = (h: number) => h >= 5 && h < 13;
-    const prodSet = new Map<string, Set<string>>();
-    const mbkSet = new Map<string, Set<string>>();
-    // Coberturas contadas en el corte, por tienda receptora (dedupe por colaborador).
-    const coverByStore = new Map<string, Map<string, { name: string; home: string }>>();
+    // Personas que marcaron por tienda y área (dedupe por colaborador). Cada una lleva
+    // si es cobertura (de otra tienda) y su tienda de origen, para señalarla en el correo.
+    type Person = { name: string; cover: boolean; home: string };
+    const prodByStore = new Map<string, Map<string, Person>>();
+    const mbkByStore = new Map<string, Map<string, Person>>();
     for (const r of recs) {
       const role = roleById.get(r.employee_id);
       // Área operativa: la registrada en el marcaje (polivalente/cobertura) tiene
@@ -116,22 +122,14 @@ Deno.serve(async (req) => {
         : role === "cajero" ? "productos" : role === "agente_mbk" ? "mbk" : null;
       if (!area) continue;
       const h = new Date(new Date(r.created_at).getTime() - NI_OFFSET_MS).getUTCHours();
-      if (area === "productos") {
-        if ((corte === "AM") !== bandProdAM(h)) continue;
-        if (!prodSet.has(r.store_id)) prodSet.set(r.store_id, new Set());
-        prodSet.get(r.store_id)!.add(r.employee_id);
-      } else {
-        if ((corte === "AM") !== bandMbkAM(h)) continue;
-        if (!mbkSet.has(r.store_id)) mbkSet.set(r.store_id, new Set());
-        mbkSet.get(r.store_id)!.add(r.employee_id);
-      }
-      // Si el que se contó es de otra tienda (cobertura), registrarlo para la nota.
+      if (area === "productos" && (corte === "AM") !== bandProdAM(h)) continue;
+      if (area === "mbk" && (corte === "AM") !== bandMbkAM(h)) continue;
       const emp: any = empById.get(r.employee_id);
       const isCover = !!r.cobertura || (emp && emp.store_id && emp.store_id !== r.store_id);
-      if (isCover) {
-        if (!coverByStore.has(r.store_id)) coverByStore.set(r.store_id, new Map());
-        coverByStore.get(r.store_id)!.set(r.employee_id, { name: emp?.full_name ?? "Agente", home: storeCodeById.get(emp?.store_id) ?? "otra" });
-      }
+      const person: Person = { name: emp?.full_name ?? "Agente", cover: isCover, home: isCover ? (storeCodeById.get(emp?.store_id) ?? "otra") : "" };
+      const target = area === "productos" ? prodByStore : mbkByStore;
+      if (!target.has(r.store_id)) target.set(r.store_id, new Map());
+      target.get(r.store_id)!.set(r.employee_id, person);
     }
 
     const rowByStore = new Map<string, any>();
@@ -139,7 +137,9 @@ Deno.serve(async (req) => {
     for (const s of stores) {
       const st: any = staffMap.get(s.id);
       const pl = dotacionPlan(st?.prod_agents ?? 0, st?.mbk_agents ?? 0, dow);
-      rowByStore.set(s.id, { code: s.code, name: s.name, prodReal: prodSet.get(s.id)?.size ?? 0, prodPlan: corte === "AM" ? pl.prodAm : pl.prodPm, mbkReal: mbkSet.get(s.id)?.size ?? 0, mbkPlan: corte === "AM" ? pl.mbkAm : pl.mbkPm, covers: [...(coverByStore.get(s.id)?.values() ?? [])] });
+      const pp = [...(prodByStore.get(s.id)?.values() ?? [])];
+      const mp = [...(mbkByStore.get(s.id)?.values() ?? [])];
+      rowByStore.set(s.id, { code: s.code, name: s.name, prodReal: pp.length, prodPlan: corte === "AM" ? pl.prodAm : pl.prodPm, mbkReal: mp.length, mbkPlan: corte === "AM" ? pl.mbkAm : pl.mbkPm, prodPeople: pp, mbkPeople: mp });
       if (s.zone_id) { if (!zoneStores.has(s.zone_id)) zoneStores.set(s.zone_id, []); zoneStores.get(s.zone_id)!.push(s.id); }
     }
     const allStoreIds = stores.map((s: any) => s.id);
