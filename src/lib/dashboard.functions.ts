@@ -223,7 +223,16 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     // ---- DOTACIÓN por ÁREA (Productos + MBK) y CORTE, como en la pestaña Dotación ----
     // Objetivo: saber si la tienda está lista para operar el turno ACTUAL. Se separa
     // Productos (cajero) y MBK (agente_mbk), cada uno con su corte y plan.
-    const roleById = new Map(employees.map((e) => [e.id as string, e.role as string]));
+    // Rol de TODOS los que marcaron, incluidas las COBERTURAS de otra tienda: se
+    // resuelve por los empleados presentes en los marcajes, no por la lista de
+    // colaboradores con alcance de tienda (si no, una cobertura se cae del conteo y el
+    // Dashboard no cuadra con la pestaña Dotación, que lee el rol del propio marcaje).
+    const recEmpIds = [...new Set(records.map((r) => r.employee_id))];
+    const roleById = new Map<string, string>();
+    if (recEmpIds.length) {
+      const { data: roleRows } = await supabaseAdmin.from("employees").select("id, role").in("id", recEmpIds);
+      for (const e of roleRows ?? []) roleById.set(e.id as string, e.role as string);
+    }
     const { data: stf } = await supabaseAdmin.from("store_staffing").select("store_id, prod_agents, mbk_agents");
     const staffMap = new Map((stf ?? []).map((x) => [x.store_id as string, x]));
     const planFor = (sid: string, dow: number) => {
