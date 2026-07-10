@@ -25,6 +25,11 @@ type Rec = {
 // Nicaragua = UTC-6 todo el año (sin horario de verano desde 2006).
 const NI_OFFSET_MS = 6 * 3600 * 1000;
 const DOW_ES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+// Duración máxima de un turno para emparejar entrada→salida como UN solo turno. Se sube
+// a 20 h (antes 14 h) para soportar el "doble turno" de cobertura (un agente que cubre el
+// turno siguiente marca una sola entrada y una sola salida ≈ 16 h). Pasado esto, un
+// marcaje abierto se considera olvido (una salida olvidada suele exceder las 20 h).
+const MAX_SHIFT_MS = 20 * 3600 * 1000;
 
 /** Fecha local (yyyy-mm-dd) y hora local (0-23) de Nicaragua para un timestamp UTC. */
 function managuaParts(iso: string): { date: string; hour: number } {
@@ -457,7 +462,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
         if (r.type === "entrada") {
           if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() > 10 * 60 * 1000) evalShift(open, null);
           open = r;
-        } else if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() <= 14 * 3600 * 1000) {
+        } else if (open && new Date(r.created_at).getTime() - new Date(open.created_at).getTime() <= MAX_SHIFT_MS) {
           evalShift(open, r); open = null;
         } else { open = null; }
       }
@@ -794,15 +799,16 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
     const fromUTC = new Date(mondayLocal.getTime() + NI_OFFSET_MS);
     const toUTC = new Date(fromUTC.getTime() + 7 * 24 * 3600 * 1000);
 
+    // Traemos entradas Y salidas: las salidas sirven para mostrar a la Seguridad
+    // Tercerizada (turnos nocturnos que a veces solo tienen salida marcada).
     const { data: rows } = await supabaseAdmin
       .from("attendance_records")
-      .select("created_at, notes, area, cobertura, employee:employees!employee_id(id, full_name, role, store_id)")
+      .select("created_at, type, notes, area, cobertura, employee:employees!employee_id(id, full_name, role, store_id)")
       .eq("store_id", data.storeId)
-      .eq("type", "entrada")
       .gte("created_at", fromUTC.toISOString())
       .lt("created_at", toUTC.toISOString())
       .order("created_at", { ascending: true })
-      .limit(5000);
+      .limit(8000);
 
     // Código de la tienda de origen (para marcar coberturas de otra tienda en el horario).
     const { data: storesData } = await supabaseAdmin.from("stores").select("id, code");
@@ -834,27 +840,40 @@ export const getWeeklySchedule = createServerFn({ method: "POST" })
     for (const rec of rows ?? []) {
       const emp = Array.isArray(rec.employee) ? rec.employee[0] : rec.employee;
       if (!emp) continue;
-      const { date, hour } = managuaParts(rec.created_at as string);
-      const di = dayIndex.get(date);
-      if (di === undefined) continue;
       const cat = scheduleArea(emp.role as string, rec.area as string | null);
       if (!cat) continue; // gerente_zona u otros: fuera del roster
-      const shift = scheduleShift(cat, hour);
-      const key = `${cat}_${shift}`;
-      // Cobertura: el colaborador es de otra tienda (marcado en el marcaje o por su
-      // tienda base ≠ esta). No aplica a la Tercerizada (cuenta compartida por tienda).
-      const empStore = emp.store_id as string | null;
-      const isCover = cat !== "TERC" && (!!rec.cobertura || (!!empStore && empStore !== data.storeId));
-      const home = isCover ? (storeCodeById.get(empStore as string) ?? null) : null;
-      // Para Seguridad Tercerizada (usuario compartido) agrupamos por NOMBRE del
-      // guarda capturado en el marcaje, no por el usuario; así se ven los distintos.
-      let identity = emp.id as string;
-      let display = (emp.full_name as string) ?? "—";
+      const { date, hour } = managuaParts(rec.created_at as string);
+
       if (cat === "TERC") {
+        // Tercerizada: se muestra por ENTRADA y por SALIDA (el guarda a veces solo marca
+        // una). Una salida de madrugada (hora < 12) cierra el turno PM del día ANTERIOR;
+        // el resto se ubica por su banda. Se agrupa por el NOMBRE del guarda (de las notas).
+        let tdate = date;
+        let tshift: "AM" | "PM" = scheduleShift(cat, hour);
+        if (rec.type === "salida" && hour < 12) {
+          tdate = new Date(new Date(date + "T00:00:00Z").getTime() - 24 * 3600 * 1000).toISOString().slice(0, 10);
+          tshift = "PM";
+        }
+        const di = dayIndex.get(tdate);
+        if (di === undefined) continue;
         const gn = guardNameFromNotes(rec.notes as string | null);
-        if (gn) { identity = `g:${gn.toLowerCase()}`; display = gn; }
+        const identity = gn ? `g:${gn.toLowerCase()}` : (emp.id as string);
+        const display = gn ?? (emp.full_name as string) ?? "—";
+        buckets[`TERC_${tshift}`][di].set(identity, { name: display, cover: false, home: null });
+        continue;
       }
-      buckets[key][di].set(identity, { name: display, cover: isCover, home });
+
+      // Resto de categorías: presencia = ENTRADA.
+      if (rec.type !== "entrada") continue;
+      const di = dayIndex.get(date);
+      if (di === undefined) continue;
+      const shift = scheduleShift(cat, hour);
+      // Cobertura: el colaborador es de otra tienda (marcado en el marcaje o por su
+      // tienda base ≠ esta).
+      const empStore = emp.store_id as string | null;
+      const isCover = !!rec.cobertura || (!!empStore && empStore !== data.storeId);
+      const home = isCover ? (storeCodeById.get(empStore as string) ?? null) : null;
+      buckets[`${cat}_${shift}`][di].set(emp.id as string, { name: (emp.full_name as string) ?? "—", cover: isCover, home });
     }
 
     const gridRows = rowDefs.map((r) => ({
@@ -1282,7 +1301,9 @@ export const setStoreStaffing = createServerFn({ method: "POST" })
 // Horarios esperados (entrada): Productos AM 6:00 / PM 18:00; MBK AM 6:00 / PM 14:00.
 
 const LATE_TOLERANCE_MIN = 5;
-const SHIFT_MAX_MS = 14 * 3600 * 1000;
+// Antes 14 h; ahora usa el tope global (20 h) para no marcar "olvido" falso en un doble
+// turno de cobertura (marcaje único ≈ 16 h). Ver MAX_SHIFT_MS.
+const SHIFT_MAX_MS = MAX_SHIFT_MS;
 
 /** Inicio esperado (min desde medianoche) y turno, según rol y hora de entrada. */
 function expectedStart(role: string, mins: number): { start: number; turno: "AM" | "PM" } {
