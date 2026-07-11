@@ -2018,18 +2018,21 @@ function SchedulePlannerPanel() {
     try {
       const c = await ctxFn({ data: { storeId, weekStart } });
       setStore(c.store);
-      setTeam(c.team as SchedPerson[]);
+      const teamNow = c.team as SchedPerson[];
+      setTeam(teamNow);
       if (c.existing) {
-        setCoverage(c.existing.coverage as unknown as SchedCoverage);
+        const cov = c.existing.coverage as unknown as SchedCoverage;
+        setCoverage(cov);
         const g = emptySchedGrid();
         for (const s of (c.existing.schedule_shifts ?? []) as Array<{ employee_id: string; day_index: number; shift_key: string; role: string; flags: Record<string, unknown> }>) {
           const k = s.shift_key as SchedShiftKey;
           if (g[k] && s.day_index >= 0 && s.day_index <= 6) g[k][s.day_index].push({ id: s.employee_id, role: s.role === "APOYO" ? "APOYO" : "CAJA", ...(s.flags || {}) });
         }
         setSchedule(g); setSavedStatus(c.existing.status);
-      } else { setCoverage(c.suggested as unknown as SchedCoverage); setSchedule(null); setSavedStatus(null); }
+        // Validar el plan cargado (reglas sin historial) — no dejar el gate en verde con un plan inválido.
+        try { setAlerts(schedValidate({ people: teamNow, coverage: cov, weekStart, prodHC: c.store.prodHC, mbkHC: c.store.mbkHC }, g)); } catch { setAlerts([]); }
+      } else { setCoverage(c.suggested as unknown as SchedCoverage); setSchedule(null); setSavedStatus(null); setAlerts([]); }
       setHasPrior(!!c.hasPriorApproved); setDomPrevIds([]); setShowRules(false);
-      setAlerts([]);
     } catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo cargar"); } finally { setLoading(false); }
     // ctxFn (useServerFn) se referencia por closure; NO va en deps para no reejecutar en cada render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2065,10 +2068,18 @@ function SchedulePlannerPanel() {
   };
   const addToCell = (k: SchedShiftKey, d: number, empId: string) => {
     if (!empId || !schedule) return;
+    const p = team.find((x) => x.id === empId);
+    if (!p) return;
     if (schedule[k][d].some((a) => a.id === empId)) return; // ya está en esa celda
+    if (SCH_SHIFT_KEYS.some((sk) => schedule[sk][d].some((a) => a.id === empId))) { toast.error(`${p.nombre} ya tiene un turno ese día (no dobletes).`); return; }
+    const shiftArea = SCH_SHIFT_DEF[k].area;
+    const cross = shiftArea === "MBK" && p.area === "PRODUCTOS"; // Productos cubriendo Bankito
+    if (p.area !== shiftArea && !cross) { toast.error(`${p.nombre} no puede cubrir ${SCH_SHIFT_DEF[k].short} (otra área).`); return; }
+    if (cross && !p.mbkQ) { toast.error(`${p.nombre} no está calificado para cubrir Bankito.`); return; }
     const g = cloneSchedGrid(schedule);
-    const isApoyo = team.find((p) => p.id === empId)?.puesto === "APOYO";
-    g[k][d].push({ id: empId, role: isApoyo ? "APOYO" : "CAJA" });
+    const assign: SchedAssign = { id: empId, role: p.puesto === "APOYO" ? "APOYO" : "CAJA" };
+    if (cross) assign.supportFrom = "PRODUCTOS";
+    g[k][d].push(assign);
     setSchedule(g); revalidate(g);
   };
   const toggleDomPrev = (id: string) => setDomPrevIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -2096,7 +2107,7 @@ function SchedulePlannerPanel() {
   const bad = alerts.filter((a) => a.level === "bad"), warn = alerts.filter((a) => a.level === "warn");
   const summary = team.map((p) => {
     let turns = 0, hours = 0;
-    if (schedule) SCH_SHIFT_KEYS.forEach((k) => schedule[k].forEach((arr) => arr.forEach((it) => { if (it.id === p.id) { turns++; hours += SCH_SHIFT_DEF[k].hours; } })));
+    if (schedule) SCH_SHIFT_KEYS.forEach((k) => schedule[k].forEach((arr) => arr.forEach((it) => { if (it.id === p.id) { turns++; hours += (it as SchedAssign).supportFrom === "PRODUCTOS" ? 12 : SCH_SHIFT_DEF[k].hours; } })));
     return { ...p, turns, hours };
   });
 
@@ -2255,7 +2266,12 @@ function SchedulePlannerPanel() {
                                     ))}
                                     <select value="" onChange={(e) => { addToCell(k, d, e.target.value); e.currentTarget.value = ""; }} className="text-[11px] h-6 rounded border border-dashed border-border bg-background/60 text-muted-foreground">
                                       <option value="">+ agregar…</option>
-                                      {team.filter((p) => !arr.some((a) => a.id === p.id)).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                                      {team.filter((p) => {
+                                        if (arr.some((a) => a.id === p.id)) return false;                                   // ya en la celda
+                                        if (SCH_SHIFT_KEYS.some((sk) => schedule[sk][d].some((a) => a.id === p.id))) return false; // ya tiene turno ese día
+                                        const sa = SCH_SHIFT_DEF[k].area;
+                                        return p.area === sa || (sa === "MBK" && p.area === "PRODUCTOS" && !!p.mbkQ);        // misma área o Productos calificado cruzando a MBK
+                                      }).map((p) => <option key={p.id} value={p.id}>{p.nombre}{SCH_SHIFT_DEF[k].area === "MBK" && p.area === "PRODUCTOS" ? " (cruzado)" : ""}</option>)}
                                     </select>
                                   </div>
                                   {caja < need && <span className="mt-1 inline-block text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1.5">falta {need - caja}</span>}

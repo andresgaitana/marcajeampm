@@ -4,7 +4,11 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { getScope } from "./admin.functions";
 import type { Json } from "@/integrations/supabase/types";
-import { generate, suggestedCoverage, SHIFT_KEYS, type SchedPerson, type Coverage, type HistoryEntry, type ShiftKey } from "./schedule-engine";
+import { generate, validate, suggestedCoverage, SHIFT_KEYS, type SchedPerson, type Coverage, type HistoryEntry, type ShiftKey, type Schedule } from "./schedule-engine";
+
+/** Caja-capaz = agenda a caja. Los de puesto APOYO son soporte, no cuentan para la
+ * cobertura (si no, se pediría cobertura que ningún cajero puede cubrir). */
+const isCajaHC = (p: SchedPerson) => p.puesto !== "APOYO";
 
 /** Verifica que el usuario tenga acceso a la tienda; devuelve prodHC/mbkHC y datos base. */
 async function loadStoreCtx(userId: string, storeId: string) {
@@ -84,10 +88,10 @@ export const getScheduleContext = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { store, prodBudget, mbkBudget } = await loadStoreCtx(context.userId, data.storeId);
     const team = await loadTeam(data.storeId);
-    // Cobertura basada en AGENTES REALES activos (no en el presupuesto), para no pedir
+    // Cobertura basada en AGENTES REALES a caja (activos, sin puesto APOYO), para no pedir
     // turnos que nadie puede cubrir. Se conserva el presupuesto solo como referencia.
-    const prodHC = team.filter((p) => p.area === "PRODUCTOS").length;
-    const mbkHC = team.filter((p) => p.area === "MBK").length;
+    const prodHC = team.filter((p) => p.area === "PRODUCTOS" && isCajaHC(p)).length;
+    const mbkHC = team.filter((p) => p.area === "MBK" && isCajaHC(p)).length;
 
     // Plan existente para esa semana (borrador o aprobado).
     const { data: existing } = await supabaseAdmin
@@ -126,9 +130,9 @@ export const generateSchedule = createServerFn({ method: "POST" })
     await loadStoreCtx(context.userId, data.storeId);
     const team = await loadTeam(data.storeId);
     if (!team.length) throw new Error("La tienda no tiene cajeros ni agentes MBK activos");
-    // Cobertura/factibilidad sobre agentes REALES activos.
-    const prodHC = team.filter((p) => p.area === "PRODUCTOS").length;
-    const mbkHC = team.filter((p) => p.area === "MBK").length;
+    // Cobertura/factibilidad sobre agentes REALES a caja (sin puesto APOYO).
+    const prodHC = team.filter((p) => p.area === "PRODUCTOS" && isCajaHC(p)).length;
+    const mbkHC = team.filter((p) => p.area === "MBK" && isCajaHC(p)).length;
     // Semilla del descanso dom→lun para el primer horario (quién cerró domingo noche pasado).
     if (data.domPrev?.length) { const set = new Set(data.domPrev); team.forEach((p) => { if (set.has(p.id)) p.domPrev = true; }); }
     const history = await loadHistory(data.storeId, data.weekStart);
@@ -164,6 +168,23 @@ export const saveSchedule = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     await loadStoreCtx(context.userId, data.storeId);
+
+    // Backstop de servidor: NO se aprueba un plan que viole reglas duras. Se revalida con
+    // el motor (incluye historial: descanso dom→lun) sobre lo que realmente se va a guardar.
+    // El cliente puede editar a mano, pero el servidor es la autoridad de la aprobación.
+    if (data.status === "approved") {
+      const team = await loadTeam(data.storeId);
+      const prodHC = team.filter((p) => p.area === "PRODUCTOS" && isCajaHC(p)).length;
+      const mbkHC = team.filter((p) => p.area === "MBK" && isCajaHC(p)).length;
+      const history = await loadHistory(data.storeId, data.weekStart);
+      const grid = {} as Schedule;
+      SHIFT_KEYS.forEach((k) => { grid[k] = Array.from({ length: 7 }, () => [] as Schedule[ShiftKey][number]); });
+      for (const a of data.assignments) {
+        (grid[a.shift_key as ShiftKey][a.day_index] ||= []).push({ id: a.employee_id, role: a.role, ...(a.flags || {}) });
+      }
+      const reds = validate({ people: team, coverage: data.coverage as Coverage, weekStart: data.weekStart, prodHC, mbkHC, history }, grid).filter((al) => al.level === "bad");
+      if (reds.length) throw new Error(`No se puede aprobar: ${reds.length} regla(s) crítica(s). ${reds[0].text}`);
+    }
 
     const nowIso = new Date().toISOString();
     const { data: sched, error: upErr } = await supabaseAdmin

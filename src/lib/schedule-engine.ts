@@ -405,7 +405,9 @@ export function generate(input: GenInput): GenOutput {
       if (arr.some((a) => a.meta.supportFrom)) alerts.push({ level: "warn", type: "support", text: `${p.nombre} apoyó a MBK (cruzado).` });
       arr.forEach((a) => { if (restricted(p, a.dayIndex, a.shiftKey) && !a.meta.exception) alerts.push({ level: "bad", type: "restr", text: `${p.nombre} asignado en restricción (${DAYS[a.dayIndex]} / ${SHIFT_DEF[a.shiftKey].short}).` }); });
       const dias: Record<number, number> = {}; arr.forEach((a) => { dias[a.dayIndex] = (dias[a.dayIndex] || 0) + 1; });
-      Object.keys(dias).filter((d) => dias[+d] > 1).forEach((d) => alerts.push({ level: "warn", type: "doblete", text: `${p.nombre} tiene DOBLETE el ${DAYS[+d]} (AM+PM).` }));
+      Object.keys(dias).filter((d) => dias[+d] > 1).forEach((d) => alerts.push({ level: "bad", type: "doblete", text: `${p.nombre} tiene DOBLETE el ${DAYS[+d]} (AM+PM): imposible, 1 turno por día.` }));
+      // Área: nadie debe estar en un turno de otra área, salvo Productos cruzado a MBK (con supportFrom).
+      arr.forEach((a) => { const sa = SHIFT_DEF[a.shiftKey].area; if (p.area !== sa && !(p.area === "PRODUCTOS" && sa === "MBK" && a.meta.supportFrom === "PRODUCTOS")) alerts.push({ level: "bad", type: "area", text: `${p.nombre} (${p.area === "MBK" ? "MBK" : "Productos"}) asignado a ${SHIFT_DEF[a.shiftKey].short}, que es de otra área.` }); });
       if (p.area === "PRODUCTOS") {
         const nights = arr.filter((a) => a.shiftKey === "PROD_PM").map((a) => a.dayIndex).sort((x, y) => x - y);
         if (nights.length > MAX_NIGHTS) alerts.push({ level: "bad", type: "nights", text: `${p.nombre} tiene ${nights.length} noches; el máximo es ${MAX_NIGHTS}.` });
@@ -415,7 +417,7 @@ export function generate(input: GenInput): GenOutput {
     for (let d = 0; d < 7; d++) {
       const cell = schedule.PROD_PM[d].filter((it) => it.role !== "APOYO");
       const hasNuevo = cell.some((it) => { const q = getPerson(it.id); return q && q.puesto === "NUEVO"; });
-      const hasAnchor = cell.some((it) => { const q = getPerson(it.id); return q && (q.puesto === "AGENTE" || q.puesto === "SASA"); });
+      const hasAnchor = cell.some((it) => { const q = getPerson(it.id); return q && q.area === "PRODUCTOS" && (q.puesto === "AGENTE" || q.puesto === "SASA"); });
       const nuevoException = cell.some((it) => { const q = getPerson(it.id); return q && q.puesto === "NUEVO" && it.exception; });
       if (hasNuevo && !hasAnchor && !nuevoException) alerts.push({ level: "bad", type: "nightpair", text: `Noche del ${DAYS[d]}: el Nuevo quedó sin Agente ni SASA que lo respalde.` });
     }
