@@ -1331,6 +1331,107 @@ function scoreMarcaje(olvidos: number, ajustes: number): number {
   return s;
 }
 
+// ── ADHERENCIA: plan del horario vs marcaje real (Fase 2) ──
+const PLAN_SHIFT: Record<string, { area: "productos" | "mbk"; turno: "AM" | "PM"; start: number; label: string }> = {
+  PROD_AM: { area: "productos", turno: "AM", start: 6 * 60, label: "Prod AM" },
+  PROD_PM: { area: "productos", turno: "PM", start: 18 * 60, label: "Prod PM" },
+  MBK_AM: { area: "mbk", turno: "AM", start: 6 * 60, label: "MBK AM" },
+  MBK_PM: { area: "mbk", turno: "PM", start: 14 * 60, label: "MBK PM" },
+};
+const ADH_DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const fmtMin = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const daysBetweenIso = (a: string, b: string) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
+const localMinsOf = (iso: string) => { const l = new Date(new Date(iso).getTime() - NI_OFFSET_MS); return l.getUTCHours() * 60 + l.getUTCMinutes(); };
+
+/** Cruza el horario guardado (aprobado/borrador) de una tienda-semana con los marcajes
+ * reales: presentes, ausencias (no-shows), extras (marcó sin estar planeado) y tardanzas
+ * (entrada > inicio del turno PLANEADO + tolerancia). Se empareja por (colaborador + día). */
+export const getScheduleAdherence = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid(),
+      weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    if (scope.storeIds !== "all" && !scope.storeIds.includes(data.storeId)) throw new Error("Sin acceso a esta tienda");
+
+    const { data: sched } = await supabaseAdmin
+      .from("schedules")
+      .select("id, status, schedule_shifts(employee_id, day_index, shift_key, role)")
+      .eq("store_id", data.storeId).eq("week_start", data.weekStart).maybeSingle();
+    if (!sched) return { found: false as const, weekStart: data.weekStart };
+
+    const shifts = (sched.schedule_shifts ?? []) as Array<{ employee_id: string; day_index: number; shift_key: string; role: string }>;
+
+    // Ventana de la semana (lunes 00:00 NI → +7 días) y entradas marcadas EN esta tienda.
+    const fromMs = Date.parse(data.weekStart + "T00:00:00Z") + NI_OFFSET_MS;
+    const { data: recs } = await supabaseAdmin
+      .from("attendance_records")
+      .select("employee_id, created_at, employee:employees!employee_id(full_name)")
+      .eq("store_id", data.storeId).eq("type", "entrada")
+      .gte("created_at", new Date(fromMs).toISOString())
+      .lt("created_at", new Date(fromMs + 7 * 86400000).toISOString())
+      .order("created_at", { ascending: true }).limit(5000);
+
+    // Nombres (planificados + marcados).
+    const nameById = new Map<string, string>();
+    for (const r of recs ?? []) { const e = Array.isArray(r.employee) ? r.employee[0] : r.employee; if (e?.full_name) nameById.set(r.employee_id as string, e.full_name as string); }
+    const missing = [...new Set(shifts.map((s) => s.employee_id))].filter((id) => !nameById.has(id));
+    if (missing.length) { const { data: emps } = await supabaseAdmin.from("employees").select("id, full_name").in("id", missing); for (const e of emps ?? []) nameById.set(e.id as string, e.full_name as string); }
+
+    // Marcaje real: (emp|díaIdx) → primera entrada del día (min locales).
+    const actual = new Map<string, number>();
+    for (const r of recs ?? []) {
+      const { date } = managuaParts(r.created_at as string);
+      const di = daysBetweenIso(data.weekStart, date);
+      if (di < 0 || di > 6) continue;
+      const key = `${r.employee_id}|${di}`; const m = localMinsOf(r.created_at as string);
+      if (!actual.has(key) || m < actual.get(key)!) actual.set(key, m);
+    }
+
+    // Plan: (emp|díaIdx) → turno planeado (prioriza CAJA sobre APOYO).
+    const planned = new Map<string, { shift_key: string; role: string }>();
+    for (const s of shifts) { const key = `${s.employee_id}|${s.day_index}`; if (!planned.has(key) || s.role !== "APOYO") planned.set(key, { shift_key: s.shift_key, role: s.role }); }
+
+    type Emp = { id: string; name: string; planned: number; present: number; absent: number; late: number; extra: number };
+    const byEmp = new Map<string, Emp>();
+    const emp = (id: string): Emp => { let e = byEmp.get(id); if (!e) { e = { id, name: nameById.get(id) ?? "—", planned: 0, present: 0, absent: 0, late: 0, extra: 0 }; byEmp.set(id, e); } return e; };
+    const noShows: Array<{ name: string; day: string; shift: string }> = [];
+    const lates: Array<{ name: string; day: string; shift: string; enteredAt: string; expected: string; lateMin: number }> = [];
+    const extras: Array<{ name: string; day: string; enteredAt: string }> = [];
+
+    for (const [key, pl] of planned) {
+      const [id, diStr] = key.split("|"); const di = +diStr; const e = emp(id); e.planned++;
+      const def = PLAN_SHIFT[pl.shift_key];
+      if (actual.has(key)) {
+        e.present++;
+        const m = actual.get(key)!; const lateBy = def ? m - def.start : 0;
+        if (def && lateBy > LATE_TOLERANCE_MIN) { e.late++; lates.push({ name: e.name, day: ADH_DAYS[di], shift: def.label, enteredAt: fmtMin(m), expected: fmtMin(def.start), lateMin: lateBy }); }
+      } else { e.absent++; noShows.push({ name: e.name, day: ADH_DAYS[di], shift: def?.label ?? pl.shift_key }); }
+    }
+    for (const [key, m] of actual) {
+      if (planned.has(key)) continue;
+      const [id, diStr] = key.split("|"); const di = +diStr; const e = emp(id); e.extra++;
+      extras.push({ name: e.name, day: ADH_DAYS[di], enteredAt: fmtMin(m) });
+    }
+
+    const totalPlanned = planned.size;
+    const present = [...planned.keys()].filter((k) => actual.has(k)).length;
+    return {
+      found: true as const, weekStart: data.weekStart, status: sched.status as string,
+      totals: {
+        planned: totalPlanned, present, absent: totalPlanned - present, late: lates.length, extra: extras.length,
+        adherencePct: totalPlanned ? Math.round((present * 100) / totalPlanned) : 0,
+        punctualityPct: present ? Math.round(((present - lates.length) * 100) / present) : 0,
+      },
+      byEmployee: [...byEmp.values()].sort((a, b) => (b.absent + b.late) - (a.absent + a.late) || b.planned - a.planned),
+      noShows, lates: lates.sort((a, b) => b.lateMin - a.lateMin), extras,
+    };
+  });
+
 export const getAttendanceKpis = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i) =>
