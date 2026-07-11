@@ -56,6 +56,9 @@ export interface GenInput {
   timeBudgetMs?: number;
   /** ms máximos de búsqueda local (hill climbing) por reinicio. */
   improveMsPerRestart?: number;
+  /** Corte por estancamiento: para si no mejora en `stallMs` ms (tras un mínimo `minMs`). */
+  stallMs?: number;
+  minMs?: number;
   /** Si viene, NO se genera: se valida ESTE horario (para revalidar ediciones manuales). */
   validateOnly?: Schedule;
 }
@@ -526,14 +529,18 @@ export function generate(input: GenInput): GenOutput {
   const attempts = input.attempts ?? 5000;
   const budget = input.timeBudgetMs ?? 8000;
   const improveMs = input.improveMsPerRestart ?? 300;
+  const stallMs = input.stallMs ?? 1500;   // para si no mejora en este lapso…
+  const minMs = input.minMs ?? 1200;       // …pero nunca antes de este mínimo de exploración
   const t0 = Date.now();
-  let best: Schedule | null = null, bestPen = Infinity, combos = 0, restarts = 0;
+  let best: Schedule | null = null, bestPen = Infinity, combos = 0, restarts = 0, lastImprove = t0;
   for (let i = 0; i < attempts; i++) {
     buildOneCandidate(); combos++; restarts++;
     combos += improve(Math.min(t0 + budget, Date.now() + improveMs));
     const pen = penaltyOf(computeAlerts());
-    if (pen < bestPen) { bestPen = pen; best = snapshot(); if (pen === 0) break; }
-    if (Date.now() - t0 > budget) break;
+    if (pen < bestPen) { bestPen = pen; best = snapshot(); lastImprove = Date.now(); if (pen === 0) break; }
+    const now = Date.now();
+    if (now - t0 > budget) break;                                   // techo de tiempo
+    if (now - t0 >= minMs && now - lastImprove >= stallMs) break;   // convergió (estancado)
   }
   schedule = best || buildEmpty();
   return { schedule, alerts: computeAlerts(), penalty: bestPen, combos, restarts };
