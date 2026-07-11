@@ -166,6 +166,11 @@ export type Database = {
       employees: {
         Row: {
           active: boolean
+          apoya_mbk: boolean
+          estudia: string | null
+          horas_meta: number
+          no_disponible: string | null
+          puesto_horario: string
           cedula: string | null
           created_at: string
           employee_code: string
@@ -187,6 +192,11 @@ export type Database = {
         }
         Insert: {
           active?: boolean
+          apoya_mbk?: boolean
+          estudia?: string | null
+          horas_meta?: number
+          no_disponible?: string | null
+          puesto_horario?: string
           cedula?: string | null
           created_at?: string
           employee_code: string
@@ -208,6 +218,11 @@ export type Database = {
         }
         Update: {
           active?: boolean
+          apoya_mbk?: boolean
+          estudia?: string | null
+          horas_meta?: number
+          no_disponible?: string | null
+          puesto_horario?: string
           cedula?: string | null
           created_at?: string
           employee_code?: string
@@ -233,6 +248,95 @@ export type Database = {
             columns: ["store_id"]
             isOneToOne: false
             referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      schedules: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          coverage: Json
+          created_at: string
+          created_by: string | null
+          id: string
+          status: string
+          store_id: string
+          week_start: string
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          coverage?: Json
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          status?: string
+          store_id: string
+          week_start: string
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          coverage?: Json
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          status?: string
+          store_id?: string
+          week_start?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "schedules_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      schedule_shifts: {
+        Row: {
+          day_index: number
+          employee_id: string
+          flags: Json
+          id: string
+          role: string
+          schedule_id: string
+          shift_key: string
+        }
+        Insert: {
+          day_index: number
+          employee_id: string
+          flags?: Json
+          id?: string
+          role?: string
+          schedule_id: string
+          shift_key: string
+        }
+        Update: {
+          day_index?: number
+          employee_id?: string
+          flags?: Json
+          id?: string
+          role?: string
+          schedule_id?: string
+          shift_key?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "schedule_shifts_schedule_id_fkey"
+            columns: ["schedule_id"]
+            isOneToOne: false
+            referencedRelation: "schedules"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_shifts_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
             referencedColumns: ["id"]
           },
         ]
