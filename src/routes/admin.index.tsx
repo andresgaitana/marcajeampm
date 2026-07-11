@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -45,6 +45,8 @@ import {
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
 import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport } from "@/lib/dashboard.functions";
+import { getScheduleContext, generateSchedule, saveSchedule, setEmployeeScheduleAttrs } from "@/lib/schedule.functions";
+import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -78,7 +80,7 @@ import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
   Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
-  ClipboardCheck, ArrowLeftRight,
+  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -205,6 +207,10 @@ function AdminDashboard() {
           <ClipboardList className="h-4 w-4 mr-2" />
           Dotación
         </TabsTrigger>
+        <TabsTrigger value="planner" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
+          <CalendarPlus className="h-4 w-4 mr-2" />
+          Crear Horario
+        </TabsTrigger>
         <TabsTrigger value="kpis" className="data-[state=active]:bg-accent data-[state=active]:text-accent-foreground">
           <ClipboardCheck className="h-4 w-4 mr-2" />
           Evaluación
@@ -248,6 +254,9 @@ function AdminDashboard() {
       </TabsContent>
       <TabsContent value="staffing">
         <StaffingPanel />
+      </TabsContent>
+      <TabsContent value="planner">
+        <SchedulePlannerPanel />
       </TabsContent>
       <TabsContent value="kpis">
         <KpiPanel />
@@ -1961,6 +1970,306 @@ function DashboardPanel() {
     </div>
   );
 }
+
+// =====================================================================
+// CREAR HORARIO — planificación semanal (motor en servidor)
+// =====================================================================
+function mondayISOf(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+type SchedAssign = { id: string; role: "CAJA" | "APOYO"; supportFrom?: string | null; contingency?: boolean; exception?: string; intercambio?: boolean };
+const emptySchedGrid = (): SchedGrid => {
+  const g = {} as SchedGrid;
+  SCH_SHIFT_KEYS.forEach((k) => { g[k] = Array.from({ length: 7 }, () => [] as SchedAssign[]); });
+  return g;
+};
+
+function SchedulePlannerPanel() {
+  const ctxFn = useServerFn(getScheduleContext);
+  const genFn = useServerFn(generateSchedule);
+  const saveFn = useServerFn(saveSchedule);
+  const attrsFn = useServerFn(setEmployeeScheduleAttrs);
+  const storesFn = useServerFn(listStores);
+  const { data: storesData } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
+  const stores = storesData ?? [];
+
+  const [storeId, setStoreId] = useState("");
+  const [weekStart, setWeekStart] = useState(() => mondayISOf(todayNI()));
+  const [store, setStore] = useState<{ code: string; name: string; prodHC: number; mbkHC: number } | null>(null);
+  const [team, setTeam] = useState<SchedPerson[]>([]);
+  const [coverage, setCoverage] = useState<SchedCoverage | null>(null);
+  const [schedule, setSchedule] = useState<SchedGrid | null>(null);
+  const [alerts, setAlerts] = useState<SchedAlert[]>([]);
+  const [savedStatus, setSavedStatus] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState<"" | "gen" | "save" | "approve">("");
+
+  useEffect(() => { if (!storeId && stores.length) setStoreId(stores[0].id); }, [stores, storeId]);
+
+  const loadCtx = useCallback(async () => {
+    if (!storeId || !weekStart) return;
+    setLoading(true);
+    try {
+      const c = await ctxFn({ data: { storeId, weekStart } });
+      setStore(c.store);
+      setTeam(c.team as SchedPerson[]);
+      if (c.existing) {
+        setCoverage(c.existing.coverage as unknown as SchedCoverage);
+        const g = emptySchedGrid();
+        for (const s of (c.existing.schedule_shifts ?? []) as Array<{ employee_id: string; day_index: number; shift_key: string; role: string; flags: Record<string, unknown> }>) {
+          const k = s.shift_key as SchedShiftKey;
+          if (g[k] && s.day_index >= 0 && s.day_index <= 6) g[k][s.day_index].push({ id: s.employee_id, role: s.role === "APOYO" ? "APOYO" : "CAJA", ...(s.flags || {}) });
+        }
+        setSchedule(g); setSavedStatus(c.existing.status);
+      } else { setCoverage(c.suggested as unknown as SchedCoverage); setSchedule(null); setSavedStatus(null); }
+      setAlerts([]);
+    } catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo cargar"); } finally { setLoading(false); }
+    // ctxFn (useServerFn) se referencia por closure; NO va en deps para no reejecutar en cada render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeId, weekStart]);
+  useEffect(() => { loadCtx(); }, [loadCtx]);
+
+  const gridToAssignments = (g: SchedGrid) => {
+    const out: Array<{ employee_id: string; day_index: number; shift_key: SchedShiftKey; role: "CAJA" | "APOYO"; flags: Record<string, unknown> }> = [];
+    SCH_SHIFT_KEYS.forEach((k) => g[k].forEach((arr, d) => arr.forEach((it) => {
+      const { id, role, ...flags } = it as SchedAssign;
+      out.push({ employee_id: id, day_index: d, shift_key: k, role: role === "APOYO" ? "APOYO" : "CAJA", flags });
+    })));
+    return out;
+  };
+  const nameOf = (id: string) => team.find((p) => p.id === id)?.nombre ?? "—";
+
+  const doGenerate = async () => {
+    if (!coverage) return;
+    setBusy("gen");
+    try { const r = await genFn({ data: { storeId, weekStart, coverage: coverage as unknown as never } }); setSchedule(r.schedule as unknown as SchedGrid); setAlerts(r.alerts as SchedAlert[]); toast.success(`Horario generado (${r.alerts.filter((a) => a.level === "bad").length} rojas)`); }
+    catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo generar"); }
+    finally { setBusy(""); }
+  };
+  const doSave = async (status: "draft" | "approved") => {
+    if (!coverage || !schedule) { toast.error("Genera el horario primero"); return; }
+    setBusy(status === "approved" ? "approve" : "save");
+    try { await saveFn({ data: { storeId, weekStart, coverage: coverage as unknown as never, status, assignments: gridToAssignments(schedule) } }); setSavedStatus(status); toast.success(status === "approved" ? "Horario aprobado y guardado" : "Borrador guardado"); }
+    catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo guardar"); }
+    finally { setBusy(""); }
+  };
+
+  const updateCov = (k: SchedShiftKey, d: number, v: number) => setCoverage((c) => (c ? { ...c, [k]: c[k].map((x, i) => (i === d ? Math.max(0, v || 0) : x)) } : c));
+  const updateTeamAttr = async (id: string, patch: Partial<SchedPerson>, dbPatch: Record<string, unknown>) => {
+    setTeam((t) => t.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+    try { await attrsFn({ data: { id, ...dbPatch } }); } catch (e) { toast.error(e instanceof Error ? e.message : "No se guardó"); }
+  };
+
+  const weekEnd = addDaysISO(weekStart, 6);
+  const covPct = (() => {
+    if (!coverage || !schedule) return null;
+    let need = 0, have = 0;
+    SCH_SHIFT_KEYS.forEach((k) => coverage[k].forEach((req, d) => { need += req; have += Math.min(req, schedule[k][d].filter((a) => (a as SchedAssign).role !== "APOYO").length); }));
+    return need ? Math.round((have * 100) / need) : 0;
+  })();
+  const bad = alerts.filter((a) => a.level === "bad"), warn = alerts.filter((a) => a.level === "warn");
+  const summary = team.map((p) => {
+    let turns = 0, hours = 0;
+    if (schedule) SCH_SHIFT_KEYS.forEach((k) => schedule[k].forEach((arr) => arr.forEach((it) => { if (it.id === p.id) { turns++; hours += SCH_SHIFT_DEF[k].hours; } })));
+    return { ...p, turns, hours };
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-foreground">Crear horario semanal</h2>
+          <p className="text-sm text-muted-foreground">Define tu cobertura, genera el plan y apruébalo. El marcaje valida su cumplimiento.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {stores.length > 1 && (
+            <Select value={storeId} onValueChange={setStoreId}>
+              <SelectTrigger className="w-52"><SelectValue placeholder="Tienda" /></SelectTrigger>
+              <SelectContent>{stores.map((s) => <SelectItem key={s.id} value={s.id}>{s.code} · {s.name}</SelectItem>)}</SelectContent>
+            </Select>
+          )}
+          <Input type="date" value={weekStart} onChange={(e) => e.target.value && setWeekStart(mondayISOf(e.target.value))} className="w-40" />
+          <span className="text-xs text-muted-foreground tabular-nums">{fmtDM(weekStart)} – {fmtDM(weekEnd)}</span>
+        </div>
+      </div>
+
+      {loading || !coverage || !store ? (
+        <div className="text-center py-10 text-muted-foreground">Cargando…</div>
+      ) : (
+        <>
+          {/* Cobertura */}
+          <div className="bg-card rounded-2xl border border-border overflow-hidden">
+            <div className="p-4 border-b border-border">
+              <h3 className="font-semibold text-foreground">Cobertura por turno y día</h3>
+              <p className="text-xs text-muted-foreground">Cuántas personas quieres por turno cada día (L–D). El motor lo respeta exacto. Presupuesto: {store.prodHC} Prod · {store.mbkHC} MBK.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[560px]">
+                <thead><tr className="bg-secondary/50">
+                  <th className="text-left p-2 font-medium">Turno</th>
+                  {SCH_DAYS.map((d, i) => <th key={i} className="p-2 text-center font-medium">{d.slice(0, 3)}</th>)}
+                </tr></thead>
+                <tbody>
+                  {SCH_SHIFT_KEYS.map((k) => (
+                    <tr key={k} className="border-t border-border">
+                      <td className="p-2 font-medium whitespace-nowrap">{SCH_SHIFT_DEF[k].short}</td>
+                      {coverage[k].map((v, d) => (
+                        <td key={d} className="p-1 text-center">
+                          <input type="number" min={0} max={6} value={v} onChange={(e) => updateCov(k, d, Number(e.target.value))} className="w-12 h-8 text-center rounded-md border border-border bg-background" />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="p-3 flex flex-wrap gap-4 border-t border-border">
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!coverage.sundayMbkSingle} onChange={(e) => setCoverage((c) => (c ? { ...c, sundayMbkSingle: e.target.checked } : c))} /> Domingo MBK 1 turno</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!coverage.mbkLean} onChange={(e) => setCoverage((c) => (c ? { ...c, mbkLean: e.target.checked } : c))} /> Esquema eficiente MBK (Mié/Jue/Dom con 1)</label>
+            </div>
+          </div>
+
+          {/* Equipo */}
+          <div className="bg-card rounded-2xl border border-border overflow-hidden">
+            <div className="p-4 border-b border-border">
+              <h3 className="font-semibold text-foreground">Equipo <span className="text-xs font-normal text-muted-foreground">({team.length} agendables)</span></h3>
+              <p className="text-xs text-muted-foreground">Los cajeros (Productos) y agentes MBK de la tienda. Sus atributos se guardan al editar.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow className="bg-secondary/50">
+                  <TableHead>Colaborador</TableHead><TableHead>Área</TableHead><TableHead>Puesto</TableHead>
+                  <TableHead>Estudia</TableHead><TableHead>No disponible</TableHead><TableHead className="text-right">Horas</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {team.length === 0 ? (
+                    <TableRow><TableCell colSpan={6} className="text-center py-6 text-muted-foreground">Sin cajeros ni agentes MBK activos.</TableCell></TableRow>
+                  ) : team.map((p) => (
+                    <TableRow key={p.id}>
+                      <TableCell className="font-medium">{p.nombre}</TableCell>
+                      <TableCell className="text-muted-foreground">{p.area === "MBK" ? "MBK" : "Productos"}</TableCell>
+                      <TableCell>
+                        <select value={p.puesto} onChange={(e) => updateTeamAttr(p.id, { puesto: e.target.value as SchedPerson["puesto"] }, { puesto_horario: e.target.value })} className="h-8 rounded-md border border-border bg-background text-sm px-1">
+                          {["AGENTE", "APOYO", "NUEVO", "PASANTE", "SASA"].map((x) => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                      </TableCell>
+                      <TableCell>
+                        <select value={p.estudia} onChange={(e) => updateTeamAttr(p.id, { estudia: e.target.value as SchedPerson["estudia"] }, { estudia: e.target.value })} className="h-8 rounded-md border border-border bg-background text-sm px-1">
+                          <option value="">No</option><option value="Sábado">Sábado</option><option value="Domingo">Domingo</option>
+                        </select>
+                      </TableCell>
+                      <TableCell>
+                        <Input defaultValue={p.noDisponible} onBlur={(e) => { if (e.target.value !== p.noDisponible) updateTeamAttr(p.id, { noDisponible: e.target.value }, { no_disponible: e.target.value }); }} placeholder="Ej. Viernes, Sábado" className="h-8 w-40" />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Input type="number" min={8} max={60} defaultValue={p.horasMeta} onBlur={(e) => { const v = Number(e.target.value) || 48; if (v !== p.horasMeta) updateTeamAttr(p.id, { horasMeta: v }, { horas_meta: v }); }} className="h-8 w-16 text-right" />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+
+          {/* Generar */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button className="bg-accent text-accent-foreground hover:bg-accent/90" disabled={busy !== "" || !team.length} onClick={doGenerate}>
+              {busy === "gen" ? <><Loader2Spin /> Generando…</> : <><CalendarPlus className="h-4 w-4 mr-1" /> Generar horario</>}
+            </Button>
+            {savedStatus && <Badge variant="outline" className={savedStatus === "approved" ? "border-emerald-500 text-emerald-700" : "border-amber-500 text-amber-700"}>{savedStatus === "approved" ? "Aprobado" : "Borrador guardado"}</Badge>}
+            {covPct != null && <span className="text-sm text-muted-foreground">Cobertura cubierta: <b className={covPct >= 100 ? "text-emerald-700" : "text-amber-700"}>{covPct}%</b></span>}
+          </div>
+
+          {/* Rejilla + alertas + resumen */}
+          {schedule && (
+            <>
+              <div className="bg-card rounded-2xl border border-border overflow-hidden">
+                <div className="p-4 border-b border-border"><h3 className="font-semibold text-foreground">Horario propuesto</h3></div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[820px]">
+                    <thead><tr className="bg-secondary/50">
+                      <th className="text-left p-2 font-medium w-40">Turno</th>
+                      {SCH_DAYS.map((d, i) => <th key={i} className="p-2 text-left font-medium">{d.slice(0, 3)}<br /><span className="text-xs font-normal text-muted-foreground">{fmtDM(addDaysISO(weekStart, i))}</span></th>)}
+                    </tr></thead>
+                    <tbody>
+                      {SCH_SHIFT_KEYS.map((k) => {
+                        const st = SCHEDULE_ROW_STYLES[k] ?? { label: "", chip: "bg-secondary border-border" };
+                        return (
+                          <tr key={k} className="border-t border-border align-top">
+                            <td className={`p-2 font-semibold ${st.label}`}>{SCH_SHIFT_DEF[k].short}</td>
+                            {schedule[k].map((arr, d) => {
+                              const need = coverage[k][d];
+                              const caja = arr.filter((a) => (a as SchedAssign).role !== "APOYO").length;
+                              return (
+                                <td key={d} className="p-1.5 align-top">
+                                  {arr.length === 0 ? <span className="text-xs text-muted-foreground">—</span> : (
+                                    <div className="flex flex-col gap-1">
+                                      {arr.map((it, i) => (
+                                        <span key={i} className={`text-xs rounded-md border px-2 py-1 ${st.chip} ${(it as SchedAssign).role === "APOYO" ? "opacity-70 border-dashed" : ""} ${(it as SchedAssign).supportFrom ? "border-orange-400 border-dashed" : ""}`}>
+                                          {nameOf(it.id)}{(it as SchedAssign).role === "APOYO" ? " · apoyo" : ""}{(it as SchedAssign).supportFrom ? " · cruzado" : ""}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {caja < need && <span className="mt-1 inline-block text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1.5">falta {need - caja}</span>}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {alerts.length > 0 && (
+                <div className="bg-card rounded-2xl border border-border p-4 space-y-2">
+                  <div className={`text-sm font-semibold ${bad.length ? "text-red-700" : "text-amber-700"}`}>{bad.length} regla(s) crítica(s) · {warn.length} advertencia(s)</div>
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {alerts.map((a, i) => (
+                      <div key={i} className={`text-xs rounded-md px-2 py-1 border ${a.level === "bad" ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800"}`}>{a.text}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-card rounded-2xl border border-border overflow-hidden">
+                <div className="p-4 border-b border-border"><h3 className="font-semibold text-foreground">Resumen por colaborador</h3></div>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader><TableRow className="bg-secondary/50"><TableHead>Colaborador</TableHead><TableHead>Área</TableHead><TableHead className="text-center">Turnos</TableHead><TableHead className="text-right">Horas</TableHead><TableHead>Meta</TableHead></TableRow></TableHeader>
+                    <TableBody>
+                      {summary.map((p) => (
+                        <TableRow key={p.id}>
+                          <TableCell className="font-medium">{p.nombre}</TableCell>
+                          <TableCell className="text-muted-foreground">{p.area === "MBK" ? "MBK" : "Productos"}</TableCell>
+                          <TableCell className="text-center">{p.turns}</TableCell>
+                          <TableCell className="text-right font-medium">{p.hours}</TableCell>
+                          <TableCell><span className={p.hours >= p.horasMeta ? "text-emerald-700" : "text-amber-700"}>{p.hours}/{p.horasMeta}h</span></TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button variant="outline" disabled={busy !== ""} onClick={() => doSave("draft")}>{busy === "save" ? "Guardando…" : "Guardar borrador"}</Button>
+                <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy !== "" || bad.length > 0} onClick={() => doSave("approved")}>{busy === "approve" ? "Aprobando…" : "Aprobar y guardar"}</Button>
+                {bad.length > 0 && <span className="text-xs text-red-700">Resuelve las reglas rojas antes de aprobar.</span>}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Loader2Spin() { return <Loader2 className="h-4 w-4 mr-1 animate-spin inline" />; }
 
 function KPI({ label, value, accent, sub }: { label: string; value: number | string; accent: "entry" | "exit" | "primary" | "muted"; sub?: string }) {
   const cls = {
