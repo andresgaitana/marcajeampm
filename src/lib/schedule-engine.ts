@@ -407,7 +407,7 @@ export function generate(input: GenInput): GenOutput {
       const dias: Record<number, number> = {}; arr.forEach((a) => { dias[a.dayIndex] = (dias[a.dayIndex] || 0) + 1; });
       Object.keys(dias).filter((d) => dias[+d] > 1).forEach((d) => alerts.push({ level: "bad", type: "doblete", text: `${p.nombre} tiene DOBLETE el ${DAYS[+d]} (AM+PM): imposible, 1 turno por día.` }));
       // Área: nadie debe estar en un turno de otra área, salvo Productos cruzado a MBK (con supportFrom).
-      arr.forEach((a) => { const sa = SHIFT_DEF[a.shiftKey].area; if (p.area !== sa && !(p.area === "PRODUCTOS" && sa === "MBK" && a.meta.supportFrom === "PRODUCTOS")) alerts.push({ level: "bad", type: "area", text: `${p.nombre} (${p.area === "MBK" ? "MBK" : "Productos"}) asignado a ${SHIFT_DEF[a.shiftKey].short}, que es de otra área.` }); });
+      arr.forEach((a) => { const sa = SHIFT_DEF[a.shiftKey].area; if (p.area !== sa && !(p.area === "PRODUCTOS" && sa === "MBK" && a.meta.supportFrom === "PRODUCTOS" && p.mbkQ)) alerts.push({ level: "bad", type: "area", text: `${p.nombre} (${p.area === "MBK" ? "MBK" : "Productos"}) asignado a ${SHIFT_DEF[a.shiftKey].short}, que es de otra área${p.area === "PRODUCTOS" && sa === "MBK" && !p.mbkQ ? " (sin calificación para Bankito)" : ""}.` }); });
       if (p.area === "PRODUCTOS") {
         const nights = arr.filter((a) => a.shiftKey === "PROD_PM").map((a) => a.dayIndex).sort((x, y) => x - y);
         if (nights.length > MAX_NIGHTS) alerts.push({ level: "bad", type: "nights", text: `${p.nombre} tiene ${nights.length} noches; el máximo es ${MAX_NIGHTS}.` });

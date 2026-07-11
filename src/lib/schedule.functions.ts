@@ -4,7 +4,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { getScope } from "./admin.functions";
 import type { Json } from "@/integrations/supabase/types";
-import { generate, validate, suggestedCoverage, SHIFT_KEYS, type SchedPerson, type Coverage, type HistoryEntry, type ShiftKey, type Schedule } from "./schedule-engine";
+import { generate, validate, suggestedCoverage, SHIFT_KEYS, type SchedPerson, type Coverage, type HistoryEntry, type ShiftKey, type Schedule, type Assignment } from "./schedule-engine";
 
 /** Caja-capaz = agenda a caja. Los de puesto APOYO son soporte, no cuentan para la
  * cobertura (si no, se pediría cobertura que ningún cajero puede cubrir). */
@@ -173,14 +173,23 @@ export const saveSchedule = createServerFn({ method: "POST" })
     // el motor (incluye historial: descanso dom→lun) sobre lo que realmente se va a guardar.
     // El cliente puede editar a mano, pero el servidor es la autoridad de la aprobación.
     if (data.status === "approved") {
+      if (!data.assignments.length) throw new Error("No puedes aprobar un horario vacío.");
       const team = await loadTeam(data.storeId);
+      const teamIds = new Set(team.map((p) => p.id));
+      if (data.assignments.some((a) => !teamIds.has(a.employee_id)))
+        throw new Error("El plan referencia a un colaborador que no está activo en la tienda.");
       const prodHC = team.filter((p) => p.area === "PRODUCTOS" && isCajaHC(p)).length;
       const mbkHC = team.filter((p) => p.area === "MBK" && isCajaHC(p)).length;
       const history = await loadHistory(data.storeId, data.weekStart);
       const grid = {} as Schedule;
-      SHIFT_KEYS.forEach((k) => { grid[k] = Array.from({ length: 7 }, () => [] as Schedule[ShiftKey][number]); });
+      SHIFT_KEYS.forEach((k) => { grid[k] = Array.from({ length: 7 }, () => [] as Assignment[]); });
       for (const a of data.assignments) {
-        (grid[a.shift_key as ShiftKey][a.day_index] ||= []).push({ id: a.employee_id, role: a.role, ...(a.flags || {}) });
+        // id/role SIEMPRE de los campos validados (nunca de flags, para que un payload no los suplante).
+        const assign: Assignment = { id: a.employee_id, role: a.role };
+        const f = (a.flags || {}) as Record<string, unknown>;
+        if (f.supportFrom === "PRODUCTOS") assign.supportFrom = "PRODUCTOS";
+        if (typeof f.exception === "string") assign.exception = f.exception; // necesario para el flujo honesto (nuevoException)
+        grid[a.shift_key as ShiftKey][a.day_index].push(assign);
       }
       const reds = validate({ people: team, coverage: data.coverage as Coverage, weekStart: data.weekStart, prodHC, mbkHC, history }, grid).filter((al) => al.level === "bad");
       if (reds.length) throw new Error(`No se puede aprobar: ${reds.length} regla(s) crítica(s). ${reds[0].text}`);
