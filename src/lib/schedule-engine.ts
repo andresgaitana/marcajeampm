@@ -54,10 +54,12 @@ export interface GenInput {
   history?: HistoryEntry[];
   attempts?: number;
   timeBudgetMs?: number;
+  /** ms máximos de búsqueda local (hill climbing) por reinicio. */
+  improveMsPerRestart?: number;
   /** Si viene, NO se genera: se valida ESTE horario (para revalidar ediciones manuales). */
   validateOnly?: Schedule;
 }
-export interface GenOutput { schedule: Schedule; alerts: Alert[]; penalty: number }
+export interface GenOutput { schedule: Schedule; alerts: Alert[]; penalty: number; combos?: number; restarts?: number }
 
 export const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 export const SHIFT_KEYS: ShiftKey[] = ["PROD_AM", "PROD_PM", "MBK_AM", "MBK_PM"];
@@ -446,19 +448,89 @@ export function generate(input: GenInput): GenOutput {
     return { schedule, alerts: a, penalty: penaltyOf(a) };
   }
 
-  // Multi-intento con presupuesto de tiempo
-  const attempts = input.attempts ?? 120;
+  // ── BÚSQUEDA LOCAL (repara el candidato con movimientos dirigidos) ──
+  const snapshot = (): Schedule => JSON.parse(JSON.stringify(schedule));
+  const restore = (s: Schedule) => { schedule = s; };
+
+  /** Genera movimientos candidatos: rellenar huecos (ADD/reubicar) y quitar/mover
+   * asignaciones (para romper reglas duras o liberar cupos). first-improvement decide. */
+  const genRepairMoves = (): Array<() => void> => {
+    const moves: Array<() => void> = [];
+    // 1) Rellenar huecos de cobertura con quien sea elegible (incluye contingencia y cruce a MBK).
+    for (const k of SHIFT_KEYS) for (let d = 0; d < 7; d++) {
+      if (cajaCount(k, d) >= cov[k][d]) continue;
+      const area = SHIFT_DEF[k].area;
+      const elig = area === "PRODUCTOS"
+        ? people.filter((p) => canProduct(p, d, k, { cont: true }))
+        : people.filter((p) => canMBK(p, d, k, { cont: true }) || canMBK(p, d, k, { support: true, cont: true }));
+      for (const p of elig) moves.push(() => {
+        if (cajaCount(k, d) >= cov[k][d]) return;
+        if (area === "MBK" && p.area === "PRODUCTOS") { if (canMBK(p, d, k, { support: true, cont: true })) place(k, d, p, { supportFrom: "PRODUCTOS" }); }
+        else if (area === "PRODUCTOS") { if (canProduct(p, d, k, { cont: true })) place(k, d, p, {}); }
+        else if (canMBK(p, d, k, { cont: true })) place(k, d, p, {});
+      });
+    }
+    // 2) Quitar o mover asignaciones existentes (romper reglas duras / rebalancear).
+    for (const k of SHIFT_KEYS) for (let d = 0; d < 7; d++) {
+      for (const it of schedule[k][d]) {
+        const id = it.id, p = getPerson(id); if (!p) continue;
+        // REMOVE
+        moves.push(() => { const idx = schedule[k][d].findIndex((x) => x.id === id); if (idx >= 0) schedule[k][d].splice(idx, 1); });
+        // MOVE a otra celda con hueco donde quepa (válido)
+        moves.push(() => {
+          const idx = schedule[k][d].findIndex((x) => x.id === id); if (idx < 0) return;
+          const removed = schedule[k][d].splice(idx, 1)[0];
+          for (const k2 of SHIFT_KEYS) { const a2 = SHIFT_DEF[k2].area; for (let d2 = 0; d2 < 7; d2++) {
+            if ((k2 === k && d2 === d) || cajaCount(k2, d2) >= cov[k2][d2]) continue;
+            if (a2 === "PRODUCTOS" && p.area === "PRODUCTOS" && canProduct(p, d2, k2, { cont: true })) { place(k2, d2, p, {}); return; }
+            if (a2 === "MBK") {
+              if (p.area === "MBK" && canMBK(p, d2, k2, { cont: true })) { place(k2, d2, p, {}); return; }
+              if (p.area === "PRODUCTOS" && canMBK(p, d2, k2, { support: true, cont: true })) { place(k2, d2, p, { supportFrom: "PRODUCTOS" }); return; }
+            }
+          } }
+          schedule[k][d].splice(idx, 0, removed); // sin destino → revertir (no perder cobertura)
+        });
+      }
+    }
+    return moves;
+  };
+
+  /** Escala local (first-improvement) hasta el óptimo local o el deadline. Devuelve # evals. */
+  const improve = (deadline: number): number => {
+    let evals = 0, curPen = penaltyOf(computeAlerts()), iter = 0;
+    while (curPen > 0 && iter++ < 120 && Date.now() < deadline) {
+      const moves = genRepairMoves();
+      for (let i = moves.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [moves[i], moves[j]] = [moves[j], moves[i]]; }
+      let applied = false;
+      const scan = Math.min(moves.length, 200);
+      for (let m = 0; m < scan; m++) {
+        const snap = snapshot();
+        moves[m](); evals++;
+        const np = penaltyOf(computeAlerts());
+        if (np < curPen) { curPen = np; applied = true; break; }
+        restore(snap);
+        if ((evals & 31) === 0 && Date.now() >= deadline) break;
+      }
+      if (!applied) break;
+    }
+    return evals;
+  };
+
+  // ── Random-restart hill climbing con presupuesto de tiempo ──
+  const attempts = input.attempts ?? 5000;
   const budget = input.timeBudgetMs ?? 8000;
+  const improveMs = input.improveMsPerRestart ?? 300;
   const t0 = Date.now();
-  let best: Schedule | null = null, bestPen = Infinity;
+  let best: Schedule | null = null, bestPen = Infinity, combos = 0, restarts = 0;
   for (let i = 0; i < attempts; i++) {
-    buildOneCandidate();
+    buildOneCandidate(); combos++; restarts++;
+    combos += improve(Math.min(t0 + budget, Date.now() + improveMs));
     const pen = penaltyOf(computeAlerts());
-    if (pen < bestPen) { bestPen = pen; best = JSON.parse(JSON.stringify(schedule)); if (pen === 0) break; }
+    if (pen < bestPen) { bestPen = pen; best = snapshot(); if (pen === 0) break; }
     if (Date.now() - t0 > budget) break;
   }
   schedule = best || buildEmpty();
-  return { schedule, alerts: computeAlerts(), penalty: bestPen };
+  return { schedule, alerts: computeAlerts(), penalty: bestPen, combos, restarts };
 }
 
 /** Revalida un horario editado a mano (reutiliza las mismas reglas que generate).

@@ -142,10 +142,11 @@ export const generateSchedule = createServerFn({ method: "POST" })
       coverage: data.coverage as Coverage,
       weekStart: data.weekStart,
       prodHC, mbkHC, history,
-      attempts: data.attempts ?? 120,
-      timeBudgetMs: 8000,
+      attempts: data.attempts ?? 5000,   // tope alto; en la práctica lo limita el presupuesto de tiempo
+      timeBudgetMs: 8000,                 // seguro bajo el timeout serverless (~10s)
+      improveMsPerRestart: 300,           // búsqueda local (hill climbing) por reinicio
     });
-    return { schedule: out.schedule, alerts: out.alerts, penalty: out.penalty };
+    return { schedule: out.schedule, alerts: out.alerts, penalty: out.penalty, combos: out.combos ?? 0, restarts: out.restarts ?? 0 };
   });
 
 /** Guarda el plan (borrador o aprobado) en schedules + schedule_shifts. */

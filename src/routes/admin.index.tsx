@@ -2065,7 +2065,7 @@ function SchedulePlannerPanel() {
   const doGenerate = async () => {
     if (!coverage) return;
     setBusy("gen");
-    try { const r = await genFn({ data: { storeId, weekStart, coverage: coverage as unknown as never, domPrev: hasPrior ? [] : domPrevIds } }); setSchedule(r.schedule as unknown as SchedGrid); setAlerts(r.alerts as SchedAlert[]); toast.success(`Horario generado (${r.alerts.filter((a) => a.level === "bad").length} rojas)`); }
+    try { const r = await genFn({ data: { storeId, weekStart, coverage: coverage as unknown as never, domPrev: hasPrior ? [] : domPrevIds } }); setSchedule(r.schedule as unknown as SchedGrid); setAlerts(r.alerts as SchedAlert[]); const reds = r.alerts.filter((a) => a.level === "bad").length; toast.success(`Horario generado · ${(r.combos ?? 0).toLocaleString()} combinaciones probadas · ${reds} regla(s) roja(s)`); }
     catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo generar"); }
     finally { setBusy(""); }
   };
