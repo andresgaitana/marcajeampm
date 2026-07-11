@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence } from "@/lib/dashboard.functions";
 import { getScheduleContext, generateSchedule, saveSchedule, setEmployeeScheduleAttrs } from "@/lib/schedule.functions";
 import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, validate as schedValidate, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
 import { SelfieCapture } from "@/components/SelfieCapture";
@@ -1986,12 +1986,23 @@ const emptySchedGrid = (): SchedGrid => {
   return g;
 };
 const cloneSchedGrid = (g: SchedGrid): SchedGrid => JSON.parse(JSON.stringify(g));
+type AdhResult =
+  | { found: false; weekStart: string }
+  | {
+      found: true; weekStart: string; status: string;
+      totals: { planned: number; present: number; absent: number; late: number; extra: number; adherencePct: number; punctualityPct: number };
+      byEmployee: Array<{ id: string; name: string; planned: number; present: number; absent: number; late: number; extra: number }>;
+      noShows: Array<{ name: string; day: string; shift: string }>;
+      lates: Array<{ name: string; day: string; shift: string; enteredAt: string; expected: string; lateMin: number }>;
+      extras: Array<{ name: string; day: string; enteredAt: string }>;
+    };
 
 function SchedulePlannerPanel() {
   const ctxFn = useServerFn(getScheduleContext);
   const genFn = useServerFn(generateSchedule);
   const saveFn = useServerFn(saveSchedule);
   const attrsFn = useServerFn(setEmployeeScheduleAttrs);
+  const adhFn = useServerFn(getScheduleAdherence);
   const storesFn = useServerFn(listStores);
   const { data: storesData } = useQuery({ queryKey: ["stores"], queryFn: () => storesFn() });
   const stores = storesData ?? [];
@@ -2009,6 +2020,8 @@ function SchedulePlannerPanel() {
   const [hasPrior, setHasPrior] = useState(true);      // ¿hay horario aprobado previo? (si no, pedir "cerró dom. pasado")
   const [domPrevIds, setDomPrevIds] = useState<string[]>([]); // quién cerró domingo noche pasado (semilla, primer horario)
   const [showRules, setShowRules] = useState(false);   // reglas rotas colapsadas por defecto (verlas si se quieren)
+  const [adh, setAdh] = useState<AdhResult | null>(null); // adherencia plan↔marcaje (Fase 2)
+  const [adhBusy, setAdhBusy] = useState(false);
 
   useEffect(() => { if (!storeId && stores.length) setStoreId(stores[0].id); }, [stores, storeId]);
 
@@ -2032,7 +2045,7 @@ function SchedulePlannerPanel() {
         // Validar el plan cargado (reglas sin historial) — no dejar el gate en verde con un plan inválido.
         try { setAlerts(schedValidate({ people: teamNow, coverage: cov, weekStart, prodHC: c.store.prodHC, mbkHC: c.store.mbkHC }, g)); } catch { setAlerts([]); }
       } else { setCoverage(c.suggested as unknown as SchedCoverage); setSchedule(null); setSavedStatus(null); setAlerts([]); }
-      setHasPrior(!!c.hasPriorApproved); setDomPrevIds([]); setShowRules(false);
+      setHasPrior(!!c.hasPriorApproved); setDomPrevIds([]); setShowRules(false); setAdh(null);
     } catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo cargar"); } finally { setLoading(false); }
     // ctxFn (useServerFn) se referencia por closure; NO va en deps para no reejecutar en cada render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2083,6 +2096,12 @@ function SchedulePlannerPanel() {
     setSchedule(g); revalidate(g);
   };
   const toggleDomPrev = (id: string) => setDomPrevIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const loadAdherence = async () => {
+    setAdhBusy(true);
+    try { setAdh(await adhFn({ data: { storeId, weekStart } }) as AdhResult); }
+    catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo cargar la adherencia"); }
+    finally { setAdhBusy(false); }
+  };
   const doSave = async (status: "draft" | "approved") => {
     if (!coverage || !schedule) { toast.error("Genera el horario primero"); return; }
     setBusy(status === "approved" ? "approve" : "save");
@@ -2331,6 +2350,77 @@ function SchedulePlannerPanel() {
               </div>
             </>
           )}
+
+          {/* Adherencia (Fase 2): plan guardado vs marcaje real */}
+          <div className="bg-card rounded-2xl border border-border p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="min-w-0">
+                <h3 className="font-semibold text-foreground">Adherencia · plan vs marcaje</h3>
+                <p className="text-xs text-muted-foreground">Compara el horario guardado de esta semana con quién marcó realmente en la tienda.</p>
+              </div>
+              <Button variant="outline" size="sm" disabled={adhBusy} onClick={loadAdherence}>{adhBusy ? "Cargando…" : "Ver adherencia"}</Button>
+            </div>
+            {adh && (!adh.found ? (
+              <p className="text-sm text-muted-foreground">No hay horario guardado para esta semana. Genera y guarda/aprueba uno primero.</p>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <div className="rounded-xl border border-border p-3 text-center">
+                    <div className={`text-2xl font-bold ${adh.totals.adherencePct >= 90 ? "text-emerald-700" : adh.totals.adherencePct >= 70 ? "text-amber-700" : "text-red-700"}`}>{adh.totals.adherencePct}%</div>
+                    <div className="text-xs text-muted-foreground">Adherencia ({adh.totals.present}/{adh.totals.planned})</div>
+                  </div>
+                  <div className="rounded-xl border border-border p-3 text-center">
+                    <div className={`text-2xl font-bold ${adh.totals.punctualityPct >= 90 ? "text-emerald-700" : "text-amber-700"}`}>{adh.totals.punctualityPct}%</div>
+                    <div className="text-xs text-muted-foreground">Puntualidad</div>
+                  </div>
+                  <div className="rounded-xl border border-border p-3 text-center">
+                    <div className={`text-2xl font-bold ${adh.totals.absent ? "text-red-700" : "text-emerald-700"}`}>{adh.totals.absent}</div>
+                    <div className="text-xs text-muted-foreground">Ausencias</div>
+                  </div>
+                  <div className="rounded-xl border border-border p-3 text-center">
+                    <div className="text-2xl font-bold text-foreground">{adh.totals.extra}</div>
+                    <div className="text-xs text-muted-foreground">Extras · {adh.totals.late} tarde</div>
+                  </div>
+                </div>
+                {(adh.noShows.length > 0 || adh.lates.length > 0 || adh.extras.length > 0) && (
+                  <div className="grid md:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <div className="font-semibold text-red-700 mb-1">Ausencias ({adh.noShows.length})</div>
+                      <div className="space-y-0.5">{adh.noShows.length ? adh.noShows.map((n, i) => <div key={i} className="text-muted-foreground">{n.name} · {n.day} {n.shift}</div>) : <div className="text-muted-foreground">—</div>}</div>
+                    </div>
+                    <div>
+                      <div className="font-semibold text-amber-700 mb-1">Tardanzas ({adh.lates.length})</div>
+                      <div className="space-y-0.5">{adh.lates.length ? adh.lates.map((l, i) => <div key={i} className="text-muted-foreground">{l.name} · {l.day} {l.shift} · {l.enteredAt} (esp. {l.expected})</div>) : <div className="text-muted-foreground">—</div>}</div>
+                    </div>
+                    <div>
+                      <div className="font-semibold text-foreground mb-1">Extras ({adh.extras.length})</div>
+                      <div className="space-y-0.5">{adh.extras.length ? adh.extras.map((x, i) => <div key={i} className="text-muted-foreground">{x.name} · {x.day} · {x.enteredAt}</div>) : <div className="text-muted-foreground">—</div>}</div>
+                    </div>
+                  </div>
+                )}
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-muted-foreground">Desglose por colaborador</summary>
+                  <div className="overflow-x-auto mt-2">
+                    <Table>
+                      <TableHeader><TableRow className="bg-secondary/50"><TableHead>Colaborador</TableHead><TableHead className="text-center">Plan</TableHead><TableHead className="text-center">Presente</TableHead><TableHead className="text-center">Ausente</TableHead><TableHead className="text-center">Tarde</TableHead><TableHead className="text-center">Extra</TableHead></TableRow></TableHeader>
+                      <TableBody>
+                        {adh.byEmployee.map((e) => (
+                          <TableRow key={e.id}>
+                            <TableCell className="font-medium">{e.name}</TableCell>
+                            <TableCell className="text-center">{e.planned}</TableCell>
+                            <TableCell className="text-center text-emerald-700">{e.present}</TableCell>
+                            <TableCell className={`text-center ${e.absent ? "text-red-700 font-semibold" : ""}`}>{e.absent}</TableCell>
+                            <TableCell className={`text-center ${e.late ? "text-amber-700" : ""}`}>{e.late}</TableCell>
+                            <TableCell className="text-center">{e.extra}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </details>
+              </div>
+            ))}
+          </div>
         </>
       )}
     </div>
