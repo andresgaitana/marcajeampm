@@ -84,8 +84,10 @@ export const getScheduleContext = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { store, prodBudget, mbkBudget } = await loadStoreCtx(context.userId, data.storeId);
     const team = await loadTeam(data.storeId);
-    const prodHC = prodBudget ?? team.filter((p) => p.area === "PRODUCTOS").length;
-    const mbkHC = mbkBudget ?? team.filter((p) => p.area === "MBK").length;
+    // Cobertura basada en AGENTES REALES activos (no en el presupuesto), para no pedir
+    // turnos que nadie puede cubrir. Se conserva el presupuesto solo como referencia.
+    const prodHC = team.filter((p) => p.area === "PRODUCTOS").length;
+    const mbkHC = team.filter((p) => p.area === "MBK").length;
 
     // Plan existente para esa semana (borrador o aprobado).
     const { data: existing } = await supabaseAdmin
@@ -93,11 +95,18 @@ export const getScheduleContext = createServerFn({ method: "POST" })
       .select("id, status, coverage, approved_at, schedule_shifts(employee_id, day_index, shift_key, role, flags)")
       .eq("store_id", data.storeId).eq("week_start", data.weekStart).maybeSingle();
 
+    // ¿Hay algún horario APROBADO de una semana anterior? Si no, es el primer horario y la
+    // UI debe pedir quién cerró el domingo noche pasado (semilla del descanso dom→lun).
+    const { data: prior } = await supabaseAdmin
+      .from("schedules")
+      .select("id").eq("store_id", data.storeId).eq("status", "approved").lt("week_start", data.weekStart).limit(1);
+
     return {
-      store: { id: store.id, code: store.code, name: store.name, prodHC, mbkHC },
+      store: { id: store.id, code: store.code, name: store.name, prodHC, mbkHC, prodBudget, mbkBudget },
       team,
       suggested: suggestedCoverage(prodHC, mbkHC, data.weekStart, {}),
       existing: existing ?? null,
+      hasPriorApproved: (prior?.length ?? 0) > 0,
     };
   });
 
@@ -109,15 +118,19 @@ export const generateSchedule = createServerFn({ method: "POST" })
       storeId: z.string().uuid(),
       weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       coverage: coverageSchema,
+      domPrev: z.array(z.string().uuid()).max(60).optional(),
       attempts: z.number().int().min(1).max(300).optional(),
     }).parse(i),
   )
   .handler(async ({ context, data }) => {
-    const { prodBudget, mbkBudget } = await loadStoreCtx(context.userId, data.storeId);
+    await loadStoreCtx(context.userId, data.storeId);
     const team = await loadTeam(data.storeId);
     if (!team.length) throw new Error("La tienda no tiene cajeros ni agentes MBK activos");
-    const prodHC = prodBudget ?? team.filter((p) => p.area === "PRODUCTOS").length;
-    const mbkHC = mbkBudget ?? team.filter((p) => p.area === "MBK").length;
+    // Cobertura/factibilidad sobre agentes REALES activos.
+    const prodHC = team.filter((p) => p.area === "PRODUCTOS").length;
+    const mbkHC = team.filter((p) => p.area === "MBK").length;
+    // Semilla del descanso dom→lun para el primer horario (quién cerró domingo noche pasado).
+    if (data.domPrev?.length) { const set = new Set(data.domPrev); team.forEach((p) => { if (set.has(p.id)) p.domPrev = true; }); }
     const history = await loadHistory(data.storeId, data.weekStart);
 
     const out = generate({

@@ -46,7 +46,7 @@ import {
 import { startRegistration } from "@simplewebauthn/browser";
 import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport } from "@/lib/dashboard.functions";
 import { getScheduleContext, generateSchedule, saveSchedule, setEmployeeScheduleAttrs } from "@/lib/schedule.functions";
-import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
+import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, validate as schedValidate, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
 import { SelfieCapture } from "@/components/SelfieCapture";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -1985,6 +1985,7 @@ const emptySchedGrid = (): SchedGrid => {
   SCH_SHIFT_KEYS.forEach((k) => { g[k] = Array.from({ length: 7 }, () => [] as SchedAssign[]); });
   return g;
 };
+const cloneSchedGrid = (g: SchedGrid): SchedGrid => JSON.parse(JSON.stringify(g));
 
 function SchedulePlannerPanel() {
   const ctxFn = useServerFn(getScheduleContext);
@@ -1997,7 +1998,7 @@ function SchedulePlannerPanel() {
 
   const [storeId, setStoreId] = useState("");
   const [weekStart, setWeekStart] = useState(() => mondayISOf(todayNI()));
-  const [store, setStore] = useState<{ code: string; name: string; prodHC: number; mbkHC: number } | null>(null);
+  const [store, setStore] = useState<{ code: string; name: string; prodHC: number; mbkHC: number; prodBudget?: number | null; mbkBudget?: number | null } | null>(null);
   const [team, setTeam] = useState<SchedPerson[]>([]);
   const [coverage, setCoverage] = useState<SchedCoverage | null>(null);
   const [schedule, setSchedule] = useState<SchedGrid | null>(null);
@@ -2005,6 +2006,9 @@ function SchedulePlannerPanel() {
   const [savedStatus, setSavedStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<"" | "gen" | "save" | "approve">("");
+  const [hasPrior, setHasPrior] = useState(true);      // ¿hay horario aprobado previo? (si no, pedir "cerró dom. pasado")
+  const [domPrevIds, setDomPrevIds] = useState<string[]>([]); // quién cerró domingo noche pasado (semilla, primer horario)
+  const [showRules, setShowRules] = useState(false);   // reglas rotas colapsadas por defecto (verlas si se quieren)
 
   useEffect(() => { if (!storeId && stores.length) setStoreId(stores[0].id); }, [stores, storeId]);
 
@@ -2024,6 +2028,7 @@ function SchedulePlannerPanel() {
         }
         setSchedule(g); setSavedStatus(c.existing.status);
       } else { setCoverage(c.suggested as unknown as SchedCoverage); setSchedule(null); setSavedStatus(null); }
+      setHasPrior(!!c.hasPriorApproved); setDomPrevIds([]); setShowRules(false);
       setAlerts([]);
     } catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo cargar"); } finally { setLoading(false); }
     // ctxFn (useServerFn) se referencia por closure; NO va en deps para no reejecutar en cada render.
@@ -2044,10 +2049,29 @@ function SchedulePlannerPanel() {
   const doGenerate = async () => {
     if (!coverage) return;
     setBusy("gen");
-    try { const r = await genFn({ data: { storeId, weekStart, coverage: coverage as unknown as never } }); setSchedule(r.schedule as unknown as SchedGrid); setAlerts(r.alerts as SchedAlert[]); toast.success(`Horario generado (${r.alerts.filter((a) => a.level === "bad").length} rojas)`); }
+    try { const r = await genFn({ data: { storeId, weekStart, coverage: coverage as unknown as never, domPrev: hasPrior ? [] : domPrevIds } }); setSchedule(r.schedule as unknown as SchedGrid); setAlerts(r.alerts as SchedAlert[]); toast.success(`Horario generado (${r.alerts.filter((a) => a.level === "bad").length} rojas)`); }
     catch (e) { toast.error(e instanceof Error ? e.message : "No se pudo generar"); }
     finally { setBusy(""); }
   };
+
+  // Revalida el horario editado a mano con las MISMAS reglas del motor (cliente).
+  const revalidate = (g: SchedGrid) => {
+    if (!coverage || !store) return;
+    try { setAlerts(schedValidate({ people: team, coverage, weekStart, prodHC: store.prodHC, mbkHC: store.mbkHC }, g)); } catch { /* noop */ }
+  };
+  const removeFromCell = (k: SchedShiftKey, d: number, idx: number) => {
+    if (!schedule) return;
+    const g = cloneSchedGrid(schedule); g[k][d].splice(idx, 1); setSchedule(g); revalidate(g);
+  };
+  const addToCell = (k: SchedShiftKey, d: number, empId: string) => {
+    if (!empId || !schedule) return;
+    if (schedule[k][d].some((a) => a.id === empId)) return; // ya está en esa celda
+    const g = cloneSchedGrid(schedule);
+    const isApoyo = team.find((p) => p.id === empId)?.puesto === "APOYO";
+    g[k][d].push({ id: empId, role: isApoyo ? "APOYO" : "CAJA" });
+    setSchedule(g); revalidate(g);
+  };
+  const toggleDomPrev = (id: string) => setDomPrevIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const doSave = async (status: "draft" | "approved") => {
     if (!coverage || !schedule) { toast.error("Genera el horario primero"); return; }
     setBusy(status === "approved" ? "approve" : "save");
@@ -2103,7 +2127,7 @@ function SchedulePlannerPanel() {
           <div className="bg-card rounded-2xl border border-border overflow-hidden">
             <div className="p-4 border-b border-border">
               <h3 className="font-semibold text-foreground">Cobertura por turno y día</h3>
-              <p className="text-xs text-muted-foreground">Cuántas personas quieres por turno cada día (L–D). El motor lo respeta exacto. Presupuesto: {store.prodHC} Prod · {store.mbkHC} MBK.</p>
+              <p className="text-xs text-muted-foreground">Cuántas personas quieres por turno cada día (L–D). El motor lo respeta exacto. Se basa en <b>agentes reales</b>: {store.prodHC} Prod · {store.mbkHC} MBK{(store.mbkBudget != null && store.mbkBudget !== store.mbkHC) || (store.prodBudget != null && store.prodBudget !== store.prodHC) ? ` (dotación autorizada: ${store.prodBudget ?? "—"} Prod · ${store.mbkBudget ?? "—"} MBK)` : ""}.</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[560px]">
@@ -2135,17 +2159,20 @@ function SchedulePlannerPanel() {
           <div className="bg-card rounded-2xl border border-border overflow-hidden">
             <div className="p-4 border-b border-border">
               <h3 className="font-semibold text-foreground">Equipo <span className="text-xs font-normal text-muted-foreground">({team.length} agendables)</span></h3>
-              <p className="text-xs text-muted-foreground">Los cajeros (Productos) y agentes MBK de la tienda. Sus atributos se guardan al editar.</p>
+              <p className="text-xs text-muted-foreground">Los cajeros (Productos) y agentes MBK de la tienda. Sus atributos se guardan al editar. <b>Apoya MBK</b> = agente de Productos calificado para cubrir Bankito.</p>
+              {!hasPrior && <p className="text-xs mt-1 text-amber-700">Primer horario de esta tienda: marca quién <b>cerró el domingo noche pasado</b> para respetar su descanso el lunes.</p>}
             </div>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader><TableRow className="bg-secondary/50">
                   <TableHead>Colaborador</TableHead><TableHead>Área</TableHead><TableHead>Puesto</TableHead>
+                  <TableHead className="text-center">Apoya MBK</TableHead>
+                  {!hasPrior && <TableHead className="text-center">Cerró dom.</TableHead>}
                   <TableHead>Estudia</TableHead><TableHead>No disponible</TableHead><TableHead className="text-right">Horas</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {team.length === 0 ? (
-                    <TableRow><TableCell colSpan={6} className="text-center py-6 text-muted-foreground">Sin cajeros ni agentes MBK activos.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={hasPrior ? 7 : 8} className="text-center py-6 text-muted-foreground">Sin cajeros ni agentes MBK activos.</TableCell></TableRow>
                   ) : team.map((p) => (
                     <TableRow key={p.id}>
                       <TableCell className="font-medium">{p.nombre}</TableCell>
@@ -2155,6 +2182,18 @@ function SchedulePlannerPanel() {
                           {["AGENTE", "APOYO", "NUEVO", "PASANTE", "SASA"].map((x) => <option key={x} value={x}>{x}</option>)}
                         </select>
                       </TableCell>
+                      <TableCell className="text-center">
+                        {p.area === "MBK"
+                          ? <span className="text-xs text-emerald-700">✓ MBK</span>
+                          : <input type="checkbox" checked={!!p.mbkQ} onChange={(e) => updateTeamAttr(p.id, { mbkQ: e.target.checked }, { apoya_mbk: e.target.checked })} title="Calificado para cubrir Bankito" />}
+                      </TableCell>
+                      {!hasPrior && (
+                        <TableCell className="text-center">
+                          {p.area === "PRODUCTOS"
+                            ? <input type="checkbox" checked={domPrevIds.includes(p.id)} onChange={() => toggleDomPrev(p.id)} title="Cerró el turno de domingo noche la semana pasada" />
+                            : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                      )}
                       <TableCell>
                         <select value={p.estudia} onChange={(e) => updateTeamAttr(p.id, { estudia: e.target.value as SchedPerson["estudia"] }, { estudia: e.target.value })} className="h-8 rounded-md border border-border bg-background text-sm px-1">
                           <option value="">No</option><option value="Sábado">Sábado</option><option value="Domingo">Domingo</option>
@@ -2186,7 +2225,10 @@ function SchedulePlannerPanel() {
           {schedule && (
             <>
               <div className="bg-card rounded-2xl border border-border overflow-hidden">
-                <div className="p-4 border-b border-border"><h3 className="font-semibold text-foreground">Horario propuesto</h3></div>
+                <div className="p-4 border-b border-border">
+                  <h3 className="font-semibold text-foreground">Horario propuesto</h3>
+                  <p className="text-xs text-muted-foreground">Editable a mano: <b>×</b> quita un turno, <b>+ agregar</b> asigna a alguien para completar horas o huecos. Las reglas se revalidan al instante.</p>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm min-w-[820px]">
                     <thead><tr className="bg-secondary/50">
@@ -2204,15 +2246,18 @@ function SchedulePlannerPanel() {
                               const caja = arr.filter((a) => (a as SchedAssign).role !== "APOYO").length;
                               return (
                                 <td key={d} className="p-1.5 align-top">
-                                  {arr.length === 0 ? <span className="text-xs text-muted-foreground">—</span> : (
-                                    <div className="flex flex-col gap-1">
-                                      {arr.map((it, i) => (
-                                        <span key={i} className={`text-xs rounded-md border px-2 py-1 ${st.chip} ${(it as SchedAssign).role === "APOYO" ? "opacity-70 border-dashed" : ""} ${(it as SchedAssign).supportFrom ? "border-orange-400 border-dashed" : ""}`}>
-                                          {nameOf(it.id)}{(it as SchedAssign).role === "APOYO" ? " · apoyo" : ""}{(it as SchedAssign).supportFrom ? " · cruzado" : ""}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
+                                  <div className="flex flex-col gap-1">
+                                    {arr.map((it, i) => (
+                                      <span key={i} className={`text-xs rounded-md border pl-2 pr-1 py-1 flex items-center gap-1 ${st.chip} ${(it as SchedAssign).role === "APOYO" ? "opacity-70 border-dashed" : ""} ${(it as SchedAssign).supportFrom ? "border-orange-400 border-dashed" : ""}`}>
+                                        <span className="flex-1 leading-tight">{nameOf(it.id)}{(it as SchedAssign).role === "APOYO" ? " · apoyo" : ""}{(it as SchedAssign).supportFrom ? " · cruzado" : ""}</span>
+                                        <button type="button" onClick={() => removeFromCell(k, d, i)} className="leading-none px-1 text-muted-foreground hover:text-red-600" title="Quitar turno">×</button>
+                                      </span>
+                                    ))}
+                                    <select value="" onChange={(e) => { addToCell(k, d, e.target.value); e.currentTarget.value = ""; }} className="text-[11px] h-6 rounded border border-dashed border-border bg-background/60 text-muted-foreground">
+                                      <option value="">+ agregar…</option>
+                                      {team.filter((p) => !arr.some((a) => a.id === p.id)).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                                    </select>
+                                  </div>
                                   {caja < need && <span className="mt-1 inline-block text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1.5">falta {need - caja}</span>}
                                 </td>
                               );
@@ -2227,12 +2272,19 @@ function SchedulePlannerPanel() {
 
               {alerts.length > 0 && (
                 <div className="bg-card rounded-2xl border border-border p-4 space-y-2">
-                  <div className={`text-sm font-semibold ${bad.length ? "text-red-700" : "text-amber-700"}`}>{bad.length} regla(s) crítica(s) · {warn.length} advertencia(s)</div>
-                  <div className="space-y-1 max-h-64 overflow-y-auto">
-                    {alerts.map((a, i) => (
-                      <div key={i} className={`text-xs rounded-md px-2 py-1 border ${a.level === "bad" ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800"}`}>{a.text}</div>
-                    ))}
-                  </div>
+                  <button type="button" onClick={() => setShowRules((v) => !v)} className="w-full flex items-center justify-between gap-2 text-left">
+                    <span className={`text-sm font-semibold ${bad.length ? "text-red-700" : "text-amber-700"}`}>
+                      {bad.length > 0 ? `${bad.length} regla(s) crítica(s)` : "Sin reglas críticas"} · {warn.length} advertencia(s)
+                    </span>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">{showRules ? "ocultar ▲" : "ver detalle ▼"}</span>
+                  </button>
+                  {showRules && (
+                    <div className="space-y-1 max-h-64 overflow-y-auto">
+                      {alerts.map((a, i) => (
+                        <div key={i} className={`text-xs rounded-md px-2 py-1 border ${a.level === "bad" ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800"}`}>{a.text}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

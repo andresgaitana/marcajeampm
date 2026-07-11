@@ -54,6 +54,8 @@ export interface GenInput {
   history?: HistoryEntry[];
   attempts?: number;
   timeBudgetMs?: number;
+  /** Si viene, NO se genera: se valida ESTE horario (para revalidar ediciones manuales). */
+  validateOnly?: Schedule;
 }
 export interface GenOutput { schedule: Schedule; alerts: Alert[]; penalty: number }
 
@@ -435,6 +437,13 @@ export function generate(input: GenInput): GenOutput {
     return p;
   };
 
+  // Revalidación de una edición manual: no se genera, solo se valida el horario dado.
+  if (input.validateOnly) {
+    schedule = input.validateOnly;
+    const a = computeAlerts();
+    return { schedule, alerts: a, penalty: penaltyOf(a) };
+  }
+
   // Multi-intento con presupuesto de tiempo
   const attempts = input.attempts ?? 120;
   const budget = input.timeBudgetMs ?? 8000;
@@ -448,4 +457,10 @@ export function generate(input: GenInput): GenOutput {
   }
   schedule = best || buildEmpty();
   return { schedule, alerts: computeAlerts(), penalty: bestPen };
+}
+
+/** Revalida un horario editado a mano (reutiliza las mismas reglas que generate).
+ * Framework-agnóstico: se puede llamar en el cliente tras un + agregar / × quitar. */
+export function validate(input: Omit<GenInput, "validateOnly">, schedule: Schedule): Alert[] {
+  return generate({ ...input, validateOnly: schedule }).alerts;
 }
