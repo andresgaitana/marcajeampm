@@ -414,7 +414,11 @@ export function generate(input: GenInput): GenOutput {
         const nights = arr.filter((a) => a.shiftKey === "PROD_PM").map((a) => a.dayIndex).sort((x, y) => x - y);
         if (nights.length > MAX_NIGHTS) alerts.push({ level: "bad", type: "nights", text: `${p.nombre} tiene ${nights.length} noches; el máximo es ${MAX_NIGHTS}.` });
         for (let i = 1; i < nights.length; i++) if (nights[i] === nights[i - 1] + 1) { alerts.push({ level: "bad", type: "nights2", text: `${p.nombre} tiene noches seguidas (${DAYS[nights[i - 1]]} y ${DAYS[nights[i]]}).` }); break; }
+        // Descanso tras turno nocturno: PROD_PM (18→6) no puede seguir de un AM al día siguiente.
+        nights.forEach((d) => { if (d < 6 && arr.some((a) => a.dayIndex === d + 1 && a.shiftKey.endsWith("AM"))) alerts.push({ level: "bad", type: "rest", text: `${p.nombre} abre AM el ${DAYS[d + 1]} tras su turno nocturno del ${DAYS[d]}. Sin descanso.` }); });
       }
+      // Semilla del primer horario: quien cerró domingo noche pasado no abre lunes AM.
+      if (p.domPrev && !previousWeekApproved() && arr.some((a) => a.dayIndex === 0 && a.shiftKey.endsWith("AM"))) alerts.push({ level: "bad", type: "restr", text: `${p.nombre} cerró domingo noche la semana pasada y abre lunes AM. Rompe el descanso.` });
     });
     for (let d = 0; d < 7; d++) {
       const cell = schedule.PROD_PM[d].filter((it) => it.role !== "APOYO");
@@ -436,8 +440,10 @@ export function generate(input: GenInput): GenOutput {
   };
   const penaltyOf = (alerts: Alert[]) => {
     let p = 0;
-    alerts.forEach((a) => { p += a.level === "bad" ? (a.type === "over" ? 700 : a.type === "nightpair" ? 1100 : 1000)
-      : (a.type === "underprod" ? 220 : a.type === "clustergap" ? 90 : a.type === "cover" ? 60 : a.type === "support" ? 40 : a.type === "apoyo" ? 5 : a.type === "leanhours" ? 2 : a.type === "doblete" ? 8 : 10); });
+    // over (12h sobre meta) es advertencia pero MUY costosa: el motor prefiere dejar un
+    // hueco (cover 60) antes que sobre-asignar horas; solo la acepta si no hay alternativa.
+    alerts.forEach((a) => { p += a.level === "bad" ? (a.type === "nightpair" ? 1100 : 1000)
+      : (a.type === "over" ? 700 : a.type === "underprod" ? 220 : a.type === "clustergap" ? 90 : a.type === "cover" ? 60 : a.type === "support" ? 40 : a.type === "apoyo" ? 5 : a.type === "leanhours" ? 2 : 10); });
     return p;
   };
 
