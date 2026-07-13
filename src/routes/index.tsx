@@ -71,7 +71,8 @@ function MarcajePage() {
   const [now, setNow] = useState(new Date());
   const [loading, setLoading] = useState(false);
   const [geo, setGeo] = useState<GeoState>(null);
-  const [geoDenied, setGeoDenied] = useState(false);
+  const [geoDenied, setGeoDenied] = useState(false); // solo PERMISSION_DENIED (código 1)
+  const [geoError, setGeoError] = useState(false);   // timeout / posición no disponible (reintenta)
   const [overrideCode, setOverrideCode] = useState("");
   const [overridePin, setOverridePin] = useState("");
   const [overrideMsg, setOverrideMsg] = useState("");
@@ -93,22 +94,37 @@ function MarcajePage() {
     return () => clearInterval(t);
   }, []);
 
-  // Capture geolocation on mount (and refresh every 60s)
+  // Capture geolocation on mount (and refresh every 60s).
+  // Intenta alta precisión (GPS); si expira o no hay señal —común bajo techo— reintenta
+  // con baja precisión (wifi/red). Solo el código 1 (PERMISSION_DENIED) es "sin permiso":
+  // un timeout NO significa que falte el permiso.
   useEffect(() => {
     if (!terminal || typeof navigator === "undefined" || !navigator.geolocation) return;
-    const get = () => {
+    let cancelled = false;
+    const onOk = (pos: GeolocationPosition) => {
+      if (cancelled) return;
+      setGeo({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+      setGeoDenied(false); setGeoError(false);
+    };
+    const tryGet = (highAccuracy: boolean) => {
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setGeo({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+        onOk,
+        (err) => {
+          if (cancelled) return;
+          if (err.code === err.PERMISSION_DENIED) { setGeoDenied(true); setGeoError(false); return; }
           setGeoDenied(false);
+          if (highAccuracy) tryGet(false);   // reintenta con baja precisión (wifi/red)
+          else setGeoError(true);            // error temporal; el intervalo seguirá reintentando
         },
-        () => setGeoDenied(true),
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
+        highAccuracy
+          ? { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+          : { enableHighAccuracy: false, timeout: 15000, maximumAge: 120000 },
       );
     };
+    const get = () => tryGet(true);
     get();
     const t = setInterval(get, 60000);
-    return () => clearInterval(t);
+    return () => { cancelled = true; clearInterval(t); };
   }, [terminal]);
 
   const reset = () => {
@@ -399,6 +415,8 @@ function MarcajePage() {
           <><MapPin className="h-3 w-3" /> Ubicación detectada (±{Math.round(geo.accuracy)}m)</>
         ) : geoDenied ? (
           <><MapPinOff className="h-3 w-3" /> Sin permiso de ubicación — actívalo para poder marcar.</>
+        ) : geoError ? (
+          <><MapPin className="h-3 w-3 animate-pulse" /> No se obtiene la ubicación — reintentando (acércate a una ventana o entrada).</>
         ) : (
           <><MapPin className="h-3 w-3 animate-pulse" /> Detectando ubicación…</>
         )}
