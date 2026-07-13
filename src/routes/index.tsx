@@ -268,7 +268,8 @@ function MarcajePage() {
         const locFail = "needsSupervisor" in res && res.needsSupervisor === true; // ubicación no válida → autorizable
         if (faceFail || supFail || locFail) {
           // Ofrecer (o reintentar) el override de supervisor sin perder la selfie/ubicación.
-          if (faceFail || locFail) setPendingPayload({ ...payload, supervisorCode: undefined, supervisorPin: undefined });
+          // Solo se reinicia el payload en el PRIMER fallo (no en un reintento con supervisor inválido).
+          if (faceFail || (locFail && !supFail)) setPendingPayload({ ...payload, supervisorCode: undefined, supervisorPin: undefined });
           setOverrideMsg(res.error ?? "Se requiere autorización de un supervisor.");
           if (supFail) toast.error(res.error);
           setStep("override");
