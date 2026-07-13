@@ -262,23 +262,30 @@ export const markAttendance = createServerFn({ method: "POST" })
       }
     }
 
-    // 4) Geocerca OBLIGATORIA: la tienda debe tener coordenadas y el colaborador
-    // debe estar físicamente dentro del radio (default 300 m).
+    // 4) Geocerca: la tienda debe tener coordenadas. Si el dispositivo NO da ubicación
+    // o cae FUERA del radio, el marcaje se permite solo con autorización de un supervisor
+    // (Gerente/GZ con autoridad en la tienda) y queda REGISTRADO (location_valid=false,
+    // nota y quién autorizó). NO se exige precisión de GPS: las tablets ubican por WiFi/red
+    // y la presencia la refuerzan el terminal fijo + la selfie en vivo + el rostro.
     let distanceM: number | null = null;
+    let locationOverrideBy: string | null = null;
     if (store.latitude == null || store.longitude == null) {
       return { ok: false as const, error: "Esta tienda no tiene ubicación configurada. Contacta al administrador." };
     }
-    if (data.latitude == null || data.longitude == null) {
-      return { ok: false as const, error: "Activa la ubicación del dispositivo para poder marcar." };
-    }
-    // Nota: NO se exige precisión de GPS. Las terminales son tablets WiFi (sin GPS
-    // real) que ubican por WiFi/IP; solo validamos que la ubicación reportada caiga
-    // dentro del radio de la tienda. La presencia la refuerzan el terminal fijo en
-    // la tienda + la selfie en vivo + el reconocimiento facial.
-    distanceM = haversineMeters(store.latitude, store.longitude, data.latitude, data.longitude);
-    const locationValid = distanceM <= (store.geofence_radius_m ?? 300);
+    const hasLoc = data.latitude != null && data.longitude != null;
+    if (hasLoc) distanceM = haversineMeters(store.latitude, store.longitude, data.latitude as number, data.longitude as number);
+    const locationValid = hasLoc && (distanceM as number) <= (store.geofence_radius_m ?? 300);
     if (!locationValid) {
-      return { ok: false as const, error: `Estás a ${Math.round(distanceM)}m de la tienda. Acércate (máx ${store.geofence_radius_m ?? 300}m).` };
+      const sup = (data.supervisorCode || data.supervisorPin)
+        ? await validateSupervisorOverride(data.supervisorCode, data.supervisorPin, store)
+        : null;
+      if (!sup) {
+        const base = !hasLoc
+          ? "No se pudo obtener la ubicación del dispositivo."
+          : `Estás a ${Math.round(distanceM as number)}m de la tienda (máx ${store.geofence_radius_m ?? 300}m).`;
+        return { ok: false as const, error: `${base} Un supervisor (Gerente) puede autorizar el marcaje.`, needsSupervisor: true as const };
+      }
+      locationOverrideBy = sup;
     }
 
     // Upload selfie (data URL -> bytes)
@@ -302,6 +309,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     const noteParts: string[] = [];
     if (data.guardName) noteParts.push(`Guarda tercerizado: ${data.guardName}${data.guardCompany ? ` (${data.guardCompany})` : ""}`);
     if (faceOverrideBy) noteParts.push("Marcaje autorizado por supervisor (override facial).");
+    if (locationOverrideBy) noteParts.push(`Marcaje ${hasLoc ? "fuera de rango" : "sin ubicación"} autorizado por supervisor.`);
     if (data.notes) noteParts.push(data.notes);
     const finalNotes = noteParts.length ? noteParts.join(" · ") : null;
 
@@ -318,7 +326,7 @@ export const markAttendance = createServerFn({ method: "POST" })
         location_accuracy_m: data.locationAccuracyM ?? null,
         location_valid: locationValid,
         auth_method: authMethod,
-        face_override_by: faceOverrideBy,
+        face_override_by: faceOverrideBy ?? locationOverrideBy, // supervisor que autorizó (rostro o ubicación)
         area: data.area ?? null,
         cobertura: esCobertura,
       });

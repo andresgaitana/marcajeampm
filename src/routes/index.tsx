@@ -265,10 +265,11 @@ function MarcajePage() {
         }
         const faceFail = !!res.error && res.error.includes("rostro no coincide");
         const supFail = !!res.error && res.error.includes("Supervisor");
-        if (faceFail || supFail) {
-          // Ofrecer (o reintentar) el override de supervisor sin perder la selfie.
-          if (faceFail) setPendingPayload({ ...payload, supervisorCode: undefined, supervisorPin: undefined });
-          setOverrideMsg(res.error ?? "El rostro no coincide.");
+        const locFail = "needsSupervisor" in res && res.needsSupervisor === true; // ubicación no válida → autorizable
+        if (faceFail || supFail || locFail) {
+          // Ofrecer (o reintentar) el override de supervisor sin perder la selfie/ubicación.
+          if (faceFail || locFail) setPendingPayload({ ...payload, supervisorCode: undefined, supervisorPin: undefined });
+          setOverrideMsg(res.error ?? "Se requiere autorización de un supervisor.");
           if (supFail) toast.error(res.error);
           setStep("override");
           return;
@@ -719,8 +720,8 @@ function MarcajePage() {
                 <h2 className="text-xl font-bold text-foreground">Autorización de supervisor</h2>
                 <p className="text-sm text-destructive mt-1">{overrideMsg}</p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  Si el reconocimiento facial falla, un Gerente de Tienda o de Zona puede autorizar
-                  este marcaje con su código y PIN (queda registrado quién autorizó).
+                  Si el rostro no coincide o no se logra la ubicación, un Gerente de Tienda o de Zona
+                  puede autorizar este marcaje con su código y PIN (queda registrado quién autorizó).
                 </p>
               </div>
               <div className="space-y-3">
