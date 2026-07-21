@@ -150,15 +150,17 @@ Deno.serve(async (req) => {
       return Response.json(SKIP); // respuesta no-JSON: fail-open
     }
 
-    // Rechazos reales (Vertex respondió y vio un problema de la foto).
+    // Rechazos: solo cuando Vertex vio un problema REAL de la foto. La IDENTIDAD la
+    // verifica el match facial (face-api) aparte, así que NO rechazamos por baja "confidence"
+    // (mide la certeza del verdict, no la calidad) ni por "quizá no hay rostro": eso causaba
+    // falsos rechazos frecuentes con cámaras de tablet (→ bloqueos por selfie).
+    const conf = typeof v.confidence === "number" ? v.confidence : 0;
     if (v.is_blank) return reject("La foto está en blanco o borrosa. Acomódate frente a la cámara.", v);
     if (v.is_screen) return reject("No se permite tomar foto de una pantalla.", v);
     if (v.is_photo_of_photo) return reject("No se permite tomar foto de otra foto o documento.", v);
-    if (!v.is_person || v.face_count === 0) return reject("No se detectó un rostro. Mira directamente a la cámara.", v);
-    if (typeof v.face_count === "number" && v.face_count > 1)
+    if (conf >= 0.6 && (!v.is_person || v.face_count === 0)) return reject("No se detectó un rostro. Mira directamente a la cámara.", v);
+    if (conf >= 0.6 && typeof v.face_count === "number" && v.face_count > 1)
       return reject("Hay más de una persona en la foto. Solo debe aparecer quien marca.", v);
-    if (typeof v.confidence === "number" && v.confidence < 0.6)
-      return reject("No se pudo confirmar tu identidad en la foto. Reintenta con mejor luz.", v);
 
     return Response.json({ ok: true, verdict: v });
   } catch (_e) {

@@ -10,8 +10,8 @@ import { validateSelfie } from "./selfie-validation.server";
 import { employeeCanMarkAtStore } from "./marcaje-auth.server";
 import { facesMatch } from "./face-match.server";
 
-const MAX_SELFIE_ATTEMPTS = 4;
-const SELFIE_BLOCK_MINUTES = 15;
+const MAX_SELFIE_ATTEMPTS = 5;
+const SELFIE_BLOCK_MINUTES = 5;
 
 /**
  * Build candidate employee_code lookups from user input. The phone keypad

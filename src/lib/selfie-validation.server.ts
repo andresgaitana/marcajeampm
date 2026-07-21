@@ -173,13 +173,16 @@ export async function validateSelfie(dataUrl: string): Promise<{
   const v = result.data;
   console.log("[selfie-validation] verdict", JSON.stringify(v));
 
-  // Reject reasons (in order)
+  // Rechazos: solo cuando Gemini vio un problema REAL de la foto. La IDENTIDAD la verifica
+  // el match facial (face-api, 128 dims) aparte, así que NO rechazamos por baja "confidence"
+  // (mide la certeza del verdict, no la calidad) ni por "quizá no hay rostro": eso causaba
+  // falsos rechazos frecuentes con cámaras de tablet en tienda (→ bloqueos por selfie).
   if (v.is_blank) return { ok: false, error: "La foto está en blanco o borrosa. Acomódate frente a la cámara.", verdict: v };
   if (v.is_screen) return { ok: false, error: "No se permite tomar foto de una pantalla.", verdict: v };
   if (v.is_photo_of_photo) return { ok: false, error: "No se permite tomar foto de otra foto o documento.", verdict: v };
-  if (!v.is_person || v.face_count === 0) return { ok: false, error: "No se detectó un rostro. Mira directamente a la cámara.", verdict: v };
-  if (v.face_count > 1) return { ok: false, error: "Hay más de una persona en la foto. Solo debe aparecer quien marca.", verdict: v };
-  if (v.confidence < 0.6) return { ok: false, error: "No se pudo confirmar tu identidad en la foto. Reintenta con mejor luz.", verdict: v };
+  // Solo rechaza "sin rostro" / "varias personas" si Gemini está SEGURO (confianza alta).
+  if (v.confidence >= 0.6 && (!v.is_person || v.face_count === 0)) return { ok: false, error: "No se detectó un rostro. Mira directamente a la cámara.", verdict: v };
+  if (v.confidence >= 0.6 && v.face_count > 1) return { ok: false, error: "Hay más de una persona en la foto. Solo debe aparecer quien marca.", verdict: v };
 
   return { ok: true, verdict: v };
 }
