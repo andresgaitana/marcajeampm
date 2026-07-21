@@ -29,6 +29,48 @@ function dotacionPlan(prod: number, mbk: number, dow: number) {
   return { prodAm, prodPm, mbkAm, mbkPm };
 }
 
+// Sección "Personal contratado vs presupuesto" (validación tienda ↔ reclutamiento).
+// deno-lint-ignore no-explicit-any
+function plantillaHtml(rows: any[]) {
+  const cell = (real: number, bud: number) => {
+    if (bud === 0) return `<span style="color:#888">${real} <span style="font-size:11px">(sin presup.)</span></span>`;
+    const falta = Math.max(0, bud - real), exc = Math.max(0, real - bud);
+    let out = `<span style="color:${falta > 0 ? "#B91C1C" : "#137A4B"};font-weight:700">${real}/${bud}</span>`;
+    if (exc > 0) out += ` <span style="color:#8A5A00;font-size:12px">(+${exc})</span>`;
+    return out;
+  };
+  let totFP = 0, totFM = 0;
+  const trs = rows.map((r) => {
+    const fp = Math.max(0, (r.budgetProd ?? 0) - (r.plantProd ?? 0));
+    const fm = Math.max(0, (r.budgetMbk ?? 0) - (r.plantMbk ?? 0));
+    totFP += fp; totFM += fm;
+    const parts: string[] = [];
+    if (fp > 0) parts.push(`Faltan ${fp} Prod`);
+    if (fm > 0) parts.push(`Falta${fm > 1 ? "n" : ""} ${fm} MBK`);
+    const noBudget = (r.budgetProd ?? 0) === 0 && (r.budgetMbk ?? 0) === 0;
+    const estado = noBudget
+      ? `<span style="color:#888">Sin presupuesto</span>`
+      : parts.length
+        ? `<span style="color:#B91C1C;font-weight:700">${parts.join(" · ")}</span>`
+        : `<span style="color:#137A4B;font-weight:700">Completa</span>`;
+    return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee"><b>${r.code}</b> ${r.name}</td>` +
+      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center">${cell(r.plantProd ?? 0, r.budgetProd ?? 0)}</td>` +
+      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center">${cell(r.plantMbk ?? 0, r.budgetMbk ?? 0)}</td>` +
+      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center">${estado}</td></tr>`;
+  }).join("");
+  const tot = (totFP + totFM) > 0
+    ? `<b style="color:#B91C1C">Faltan ${totFP} Productos + ${totFM} MBK (${totFP + totFM} por reclutar)</b>`
+    : `<b style="color:#137A4B">Plantilla completa en todas las tiendas</b>`;
+  return `<h2 style="color:#E8622A;margin:24px 0 4px">Personal contratado vs presupuesto</h2>` +
+    `<p style="color:#5B6B78;margin:0 0 12px">Agentes activos cargados en la app vs dotación autorizada. Los polivalentes cuentan en MBK. El "faltan" es lo que reclutamiento debe cubrir.</p>` +
+    `<table style="border-collapse:collapse;width:100%;max-width:680px;font-size:14px"><thead><tr style="background:#F4F6F8">` +
+    `<th style="padding:6px 10px;text-align:left">Tienda</th><th style="padding:6px 10px;text-align:center">Productos<br><span style="font-weight:400;font-size:11px">real / presup.</span></th>` +
+    `<th style="padding:6px 10px;text-align:center">MBK<br><span style="font-weight:400;font-size:11px">real / presup.</span></th><th style="padding:6px 10px;text-align:center">Estado</th>` +
+    `</tr></thead><tbody>${trs}</tbody></table>` +
+    `<p style="color:#20303B;font-size:13px;margin-top:8px">${tot}</p>` +
+    `<p style="color:#888;font-size:12px;margin-top:2px">"real" = colaboradores activos cargados · "presup." = dotación autorizada · (+N) = excedente. Limpieza y seguridad se miden aparte.</p>`;
+}
+
 // deno-lint-ignore no-explicit-any
 function buildHtml(rows: any[], corte: string, dateLabel: string) {
   const cnt = (real: number, plan: number) => {
@@ -58,7 +100,9 @@ function buildHtml(rows: any[], corte: string, dateLabel: string) {
     `<th style="padding:6px 10px;text-align:left">MBK</th><th style="padding:6px 10px;text-align:center">Estado</th>` +
     `</tr></thead><tbody>${trs}</tbody></table>` +
     `<p style="color:#888;font-size:12px;margin-top:10px">Verde = cubierto · Ámbar = falta. "Listo" solo si Productos y MBK están cubiertos. ` +
-    `(cob. XX) = agente de otra tienda cubriendo aquí.</p></div>`;
+    `(cob. XX) = agente de otra tienda cubriendo aquí.</p>` +
+    (corte === "AM" ? plantillaHtml(rows) : "") +
+    `</div>`;
 }
 
 Deno.serve(async (req) => {
@@ -87,7 +131,7 @@ Deno.serve(async (req) => {
     const parts = await Promise.all([
       supabase.from("stores").select("id, code, name, zone_id").eq("active", true),
       supabase.from("store_staffing").select("store_id, prod_agents, mbk_agents"),
-      supabase.from("employees").select("id, role, store_id, full_name").eq("active", true).in("role", ["cajero", "agente_mbk"]),
+      supabase.from("employees").select("id, role, store_id, full_name, polivalente").eq("active", true).in("role", ["cajero", "agente_mbk"]),
       supabase.from("attendance_records").select("created_at, employee_id, store_id, area, cobertura").eq("type", "entrada").gte("created_at", startTodayISO),
       supabase.from("user_roles").select("user_id, role"),
       supabase.from("user_zone_assignments").select("user_id, zone_id"),
@@ -106,6 +150,17 @@ Deno.serve(async (req) => {
     const roleById = new Map(emps.map((e: any) => [e.id, e.role]));
     const empById = new Map(emps.map((e: any) => [e.id, e]));
     const storeCodeById = new Map(stores.map((s: any) => [s.id, s.code]));
+    // Plantilla CONTRATADA por tienda (cargados vs presupuesto). Regla del negocio:
+    // los polivalentes cuentan en MBK (ahí se ubican los de mayor experiencia).
+    // Limpieza/seguridad NO entran: aquí solo se mide Productos y MBK.
+    const plantByStore = new Map<string, { prod: number; mbk: number }>();
+    for (const e of emps as any[]) {
+      if (!e.store_id) continue;
+      const toMbk = e.role === "agente_mbk" || (e.role === "cajero" && e.polivalente === true);
+      const p = plantByStore.get(e.store_id) ?? { prod: 0, mbk: 0 };
+      if (toMbk) p.mbk++; else p.prod++;
+      plantByStore.set(e.store_id, p);
+    }
     const bandProdAM = (h: number) => h >= 5 && h < 17;
     const bandMbkAM = (h: number) => h >= 5 && h < 13;
     // Personas que marcaron por tienda y área (dedupe por colaborador). Cada una lleva
@@ -139,7 +194,8 @@ Deno.serve(async (req) => {
       const pl = dotacionPlan(st?.prod_agents ?? 0, st?.mbk_agents ?? 0, dow);
       const pp = [...(prodByStore.get(s.id)?.values() ?? [])];
       const mp = [...(mbkByStore.get(s.id)?.values() ?? [])];
-      rowByStore.set(s.id, { code: s.code, name: s.name, prodReal: pp.length, prodPlan: corte === "AM" ? pl.prodAm : pl.prodPm, mbkReal: mp.length, mbkPlan: corte === "AM" ? pl.mbkAm : pl.mbkPm, prodPeople: pp, mbkPeople: mp });
+      const plant = plantByStore.get(s.id) ?? { prod: 0, mbk: 0 };
+      rowByStore.set(s.id, { code: s.code, name: s.name, prodReal: pp.length, prodPlan: corte === "AM" ? pl.prodAm : pl.prodPm, mbkReal: mp.length, mbkPlan: corte === "AM" ? pl.mbkAm : pl.mbkPm, prodPeople: pp, mbkPeople: mp, plantProd: plant.prod, plantMbk: plant.mbk, budgetProd: st?.prod_agents ?? 0, budgetMbk: st?.mbk_agents ?? 0 });
       if (s.zone_id) { if (!zoneStores.has(s.zone_id)) zoneStores.set(s.zone_id, []); zoneStores.get(s.zone_id)!.push(s.id); }
     }
     const allStoreIds = stores.map((s: any) => s.id);
