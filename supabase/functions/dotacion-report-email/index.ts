@@ -29,50 +29,9 @@ function dotacionPlan(prod: number, mbk: number, dow: number) {
   return { prodAm, prodPm, mbkAm, mbkPm };
 }
 
-// Sección "Personal contratado vs presupuesto" (validación tienda ↔ reclutamiento).
-// deno-lint-ignore no-explicit-any
-function plantillaHtml(rows: any[]) {
-  const cell = (real: number, bud: number) => {
-    if (bud === 0) return `<span style="color:#888">${real} <span style="font-size:11px">(sin presup.)</span></span>`;
-    const falta = Math.max(0, bud - real), exc = Math.max(0, real - bud);
-    let out = `<span style="color:${falta > 0 ? "#B91C1C" : "#137A4B"};font-weight:700">${real}/${bud}</span>`;
-    if (exc > 0) out += ` <span style="color:#8A5A00;font-size:12px">(+${exc})</span>`;
-    return out;
-  };
-  let totFP = 0, totFM = 0;
-  const trs = rows.map((r) => {
-    const fp = Math.max(0, (r.budgetProd ?? 0) - (r.plantProd ?? 0));
-    const fm = Math.max(0, (r.budgetMbk ?? 0) - (r.plantMbk ?? 0));
-    totFP += fp; totFM += fm;
-    const parts: string[] = [];
-    if (fp > 0) parts.push(`Faltan ${fp} Prod`);
-    if (fm > 0) parts.push(`Falta${fm > 1 ? "n" : ""} ${fm} MBK`);
-    const noBudget = (r.budgetProd ?? 0) === 0 && (r.budgetMbk ?? 0) === 0;
-    const estado = noBudget
-      ? `<span style="color:#888">Sin presupuesto</span>`
-      : parts.length
-        ? `<span style="color:#B91C1C;font-weight:700">${parts.join(" · ")}</span>`
-        : `<span style="color:#137A4B;font-weight:700">Completa</span>`;
-    return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee"><b>${r.code}</b> ${r.name}</td>` +
-      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center">${cell(r.plantProd ?? 0, r.budgetProd ?? 0)}</td>` +
-      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center">${cell(r.plantMbk ?? 0, r.budgetMbk ?? 0)}</td>` +
-      `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center">${estado}</td></tr>`;
-  }).join("");
-  const tot = (totFP + totFM) > 0
-    ? `<b style="color:#B91C1C">Faltan ${totFP} Productos + ${totFM} MBK (${totFP + totFM} por reclutar)</b>`
-    : `<b style="color:#137A4B">Plantilla completa en todas las tiendas</b>`;
-  return `<h2 style="color:#E8622A;margin:24px 0 4px">Personal contratado vs presupuesto</h2>` +
-    `<p style="color:#5B6B78;margin:0 0 12px">Agentes activos cargados en la app vs dotación autorizada. Los polivalentes cuentan en MBK. El "faltan" es lo que reclutamiento debe cubrir.</p>` +
-    `<table style="border-collapse:collapse;width:100%;max-width:680px;font-size:14px"><thead><tr style="background:#F4F6F8">` +
-    `<th style="padding:6px 10px;text-align:left">Tienda</th><th style="padding:6px 10px;text-align:center">Productos<br><span style="font-weight:400;font-size:11px">real / presup.</span></th>` +
-    `<th style="padding:6px 10px;text-align:center">MBK<br><span style="font-weight:400;font-size:11px">real / presup.</span></th><th style="padding:6px 10px;text-align:center">Estado</th>` +
-    `</tr></thead><tbody>${trs}</tbody></table>` +
-    `<p style="color:#20303B;font-size:13px;margin-top:8px">${tot}</p>` +
-    `<p style="color:#888;font-size:12px;margin-top:2px">"real" = colaboradores activos cargados · "presup." = dotación autorizada · (+N) = excedente. Limpieza y seguridad se miden aparte.</p>`;
-}
-
 // deno-lint-ignore no-explicit-any
 function buildHtml(rows: any[], corte: string, dateLabel: string) {
+  const am = corte === "AM";
   const cnt = (real: number, plan: number) => {
     const color = plan === 0 ? "#888" : real >= plan ? "#137A4B" : "#B45309";
     return `<span style="color:${color};font-weight:700">${real}/${plan}</span>`;
@@ -82,26 +41,44 @@ function buildHtml(rows: any[], corte: string, dateLabel: string) {
     people.length
       ? people.map((p) => p.cover ? `<span style="color:#8A5A00">${p.name} <b>(cob. ${p.home})</b></span>` : p.name).join(", ")
       : `<span style="color:#B45309">— nadie marcó —</span>`;
-  const cell = (real: number, plan: number, people: any[]) =>
+  // Plantilla contratada vs presupuesto (solo AM): línea aparte DENTRO de la misma celda.
+  const plant = (real: number, bud: number) => {
+    const base = `font-size:12px;border-top:1px dashed #E3E7EA;margin-top:4px;padding-top:3px`;
+    if (bud === 0) return `<div style="${base};color:#888">Contratados: ${real} <span style="font-size:11px">(sin presup.)</span></div>`;
+    const falta = Math.max(0, bud - real), exc = Math.max(0, real - bud);
+    const tag = falta > 0
+      ? `<span style="color:#B91C1C;font-weight:700"> · faltan ${falta}</span>`
+      : exc > 0 ? `<span style="color:#8A5A00"> · +${exc}</span>` : `<span style="color:#137A4B"> · ok</span>`;
+    return `<div style="${base};color:#5B6B78">Contratados: <b>${real}/${bud}</b>${tag}</div>`;
+  };
+  const cell = (real: number, plan: number, people: any[], pReal: number, pBud: number) =>
     `<td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top">${cnt(real, plan)}` +
-    `<div style="font-size:12px;color:#5B6B78;margin-top:2px">${nameList(people)}</div></td>`;
+    `<div style="font-size:12px;color:#5B6B78;margin-top:2px">${nameList(people)}</div>` +
+    (am ? plant(pReal, pBud) : "") + `</td>`;
+  let totFP = 0, totFM = 0;
   const trs = rows.map((r) => {
+    totFP += Math.max(0, (r.budgetProd ?? 0) - (r.plantProd ?? 0));
+    totFM += Math.max(0, (r.budgetMbk ?? 0) - (r.plantMbk ?? 0));
     const ready = r.prodReal >= r.prodPlan && r.mbkReal >= r.mbkPlan;
     return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top"><b>${r.code}</b> ${r.name}</td>` +
-      cell(r.prodReal, r.prodPlan, r.prodPeople ?? []) +
-      cell(r.mbkReal, r.mbkPlan, r.mbkPeople ?? []) +
+      cell(r.prodReal, r.prodPlan, r.prodPeople ?? [], r.plantProd ?? 0, r.budgetProd ?? 0) +
+      cell(r.mbkReal, r.mbkPlan, r.mbkPeople ?? [], r.plantMbk ?? 0, r.budgetMbk ?? 0) +
       `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;vertical-align:top;color:${ready ? "#137A4B" : "#B45309"};font-weight:700">${ready ? "Listo" : "Falta"}</td></tr>`;
   }).join("");
+  const recl = am
+    ? `<p style="color:#20303B;font-size:13px;margin-top:8px">Plantilla vs presupuesto — ${(totFP + totFM) > 0 ? `<b style="color:#B91C1C">faltan ${totFP} Productos + ${totFM} MBK por reclutar</b>` : `<b style="color:#137A4B">plantilla completa en todas las tiendas</b>`}. Los polivalentes cuentan en MBK; limpieza y seguridad se miden aparte.</p>`
+    : "";
   return `<div style="font-family:Segoe UI,Arial,sans-serif;color:#20303B">` +
     `<h2 style="color:#E8622A;margin:0 0 4px">Dotación real por tienda — Turno ${corte}</h2>` +
-    `<p style="color:#5B6B78;margin:0 0 12px">${dateLabel} · Quién marcó por área (Productos y MBK) vs plan del corte.</p>` +
+    `<p style="color:#5B6B78;margin:0 0 12px">${dateLabel} · Quién marcó por área vs plan del corte${am ? ", con la plantilla contratada vs presupuesto" : ""}.</p>` +
     `<table style="border-collapse:collapse;width:100%;max-width:680px;font-size:14px"><thead><tr style="background:#F4F6F8">` +
     `<th style="padding:6px 10px;text-align:left">Tienda</th><th style="padding:6px 10px;text-align:left">Productos</th>` +
     `<th style="padding:6px 10px;text-align:left">MBK</th><th style="padding:6px 10px;text-align:center">Estado</th>` +
     `</tr></thead><tbody>${trs}</tbody></table>` +
-    `<p style="color:#888;font-size:12px;margin-top:10px">Verde = cubierto · Ámbar = falta. "Listo" solo si Productos y MBK están cubiertos. ` +
+    `<p style="color:#888;font-size:12px;margin-top:10px">Arriba = quién marcó vs plan del corte (verde cubierto / ámbar falta). ` +
+    (am ? `"Contratados" = activos cargados vs presupuesto (rojo = faltan, +N = excedente). ` : ``) +
     `(cob. XX) = agente de otra tienda cubriendo aquí.</p>` +
-    (corte === "AM" ? plantillaHtml(rows) : "") +
+    recl +
     `</div>`;
 }
 
