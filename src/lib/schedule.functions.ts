@@ -190,6 +190,7 @@ export const saveSchedule = createServerFn({ method: "POST" })
         const f = (a.flags || {}) as Record<string, unknown>;
         if (f.supportFrom === "PRODUCTOS") assign.supportFrom = "PRODUCTOS";
         if (typeof f.exception === "string") assign.exception = f.exception; // necesario para el flujo honesto (nuevoException)
+        if (f.override === true) assign.override = true; // doble turno / cruce de área autorizado por el GT
         grid[a.shift_key as ShiftKey][a.day_index].push(assign);
       }
       const reds = validate({ people: team, coverage: data.coverage as Coverage, weekStart: data.weekStart, prodHC, mbkHC, history }, grid).filter((al) => al.level === "bad");

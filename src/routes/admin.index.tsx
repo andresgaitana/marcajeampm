@@ -80,7 +80,7 @@ import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
   Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
-  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2,
+  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2, Printer,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -1981,7 +1981,7 @@ function mondayISOf(iso: string): string {
   d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
   return d.toISOString().slice(0, 10);
 }
-type SchedAssign = { id: string; role: "CAJA" | "APOYO"; supportFrom?: string | null; contingency?: boolean; exception?: string; intercambio?: boolean };
+type SchedAssign = { id: string; role: "CAJA" | "APOYO"; supportFrom?: string | null; contingency?: boolean; exception?: string; intercambio?: boolean; override?: boolean };
 const emptySchedGrid = (): SchedGrid => {
   const g = {} as SchedGrid;
   SCH_SHIFT_KEYS.forEach((k) => { g[k] = Array.from({ length: 7 }, () => [] as SchedAssign[]); });
@@ -2022,6 +2022,7 @@ function SchedulePlannerPanel() {
   const [hasPrior, setHasPrior] = useState(true);      // ¿hay horario aprobado previo? (si no, pedir "cerró dom. pasado")
   const [domPrevIds, setDomPrevIds] = useState<string[]>([]); // quién cerró domingo noche pasado (semilla, primer horario)
   const [showRules, setShowRules] = useState(false);   // reglas rotas colapsadas por defecto (verlas si se quieren)
+  const [selEmp, setSelEmp] = useState<string | null>(null); // agente resaltado: ver toda su semana de un vistazo
   const [adh, setAdh] = useState<AdhResult | null>(null); // adherencia plan↔marcaje (Fase 2)
   const [adhBusy, setAdhBusy] = useState(false);
 
@@ -2081,23 +2082,69 @@ function SchedulePlannerPanel() {
     if (!schedule) return;
     const g = cloneSchedGrid(schedule); g[k][d].splice(idx, 1); setSchedule(g); revalidate(g);
   };
+  // El GT decide: puede asignar a CUALQUIER agente. Si eso rompe el doble turno (24h) o el
+  // cruce de área, se le pide confirmación y el turno queda marcado como autorizado por él
+  // (esas dos reglas bajan de roja a advertencia; las demás siguen bloqueando).
   const addToCell = (k: SchedShiftKey, d: number, empId: string) => {
     if (!empId || !schedule) return;
     const p = team.find((x) => x.id === empId);
     if (!p) return;
     if (schedule[k][d].some((a) => a.id === empId)) return; // ya está en esa celda
-    if (SCH_SHIFT_KEYS.some((sk) => schedule[sk][d].some((a) => a.id === empId))) { toast.error(`${p.nombre} ya tiene un turno ese día (no dobletes).`); return; }
     const shiftArea = SCH_SHIFT_DEF[k].area;
-    const cross = shiftArea === "MBK" && p.area === "PRODUCTOS"; // Productos cubriendo Bankito
-    if (p.area !== shiftArea && !cross) { toast.error(`${p.nombre} no puede cubrir ${SCH_SHIFT_DEF[k].short} (otra área).`); return; }
-    if (cross && !p.mbkQ) { toast.error(`${p.nombre} no está calificado para cubrir Bankito.`); return; }
+    const yaTiene = SCH_SHIFT_KEYS.some((sk) => schedule[sk][d].some((a) => a.id === empId));
+    const cruceValido = shiftArea === "MBK" && p.area === "PRODUCTOS" && !!p.mbkQ;
+    const cruceArea = p.area !== shiftArea && !cruceValido;
+    const avisos: string[] = [];
+    if (yaTiene) avisos.push(`• ${p.nombre} ya tiene turno el ${SCH_DAYS[d]}: quedaría con DOBLE TURNO (24 h).`);
+    if (cruceArea) avisos.push(`• ${p.nombre} es de ${p.area === "MBK" ? "MBK" : "Productos"} y este turno es de ${shiftArea === "MBK" ? "MBK" : "Productos"}.`);
+    if (avisos.length && !window.confirm(`${avisos.join("\n")}\n\n¿Asignarlo de todas formas? Quedará registrado como autorizado por ti.`)) return;
     const g = cloneSchedGrid(schedule);
     const assign: SchedAssign = { id: empId, role: p.puesto === "APOYO" ? "APOYO" : "CAJA" };
-    if (cross) assign.supportFrom = "PRODUCTOS";
+    if (shiftArea === "MBK" && p.area === "PRODUCTOS") assign.supportFrom = "PRODUCTOS";
+    if (avisos.length) assign.override = true;
     g[k][d].push(assign);
     setSchedule(g); revalidate(g);
   };
   const toggleDomPrev = (id: string) => setDomPrevIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  // Imprimir el horario (documento listo para PDF). La ventana se abre en el gesto de clic
+  // (sin await) para que el navegador no la bloquee.
+  const printSchedule = () => {
+    if (!schedule || !store) return;
+    const w = window.open("", "_blank");
+    if (!w) { toast.error("Permite las ventanas emergentes para poder imprimir."); return; }
+    const aprobado = savedStatus === "approved";
+    const bg: Record<string, string> = { PROD_AM: "#FEF3C7", PROD_PM: "#DBEAFE", MBK_AM: "#FFEDD5", MBK_PM: "#E0F2FE" };
+    const th = SCH_DAYS.map((dd, i) => `<th>${dd}<br><span class="sm">${fmtDM(addDaysISO(weekStart, i))}</span></th>`).join("");
+    const filas = SCH_SHIFT_KEYS.map((k) => {
+      const tds = schedule[k].map((arr) => {
+        const items = arr.map((it) => {
+          const a = it as SchedAssign;
+          const extra = [a.supportFrom ? "cruzado" : "", a.role === "APOYO" ? "apoyo" : "", a.override ? "autorizado GT" : ""].filter(Boolean).join(", ");
+          return `<div>${nameOf(it.id)}${extra ? ` <span class="sm">(${extra})</span>` : ""}</div>`;
+        }).join("");
+        return `<td>${items || '<span class="sm">—</span>'}</td>`;
+      }).join("");
+      return `<tr><th class="turno" style="background:${bg[k]}">${SCH_SHIFT_DEF[k].short}</th>${tds}</tr>`;
+    }).join("");
+    const res = summary.map((p) => `<tr><td>${p.nombre}</td><td>${p.area === "MBK" ? "MBK" : "Productos"}</td><td class="c">${p.turns}</td><td class="c">${p.hours}h / ${p.horasMeta}h</td></tr>`).join("");
+    w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Horario ${store.code} ${fmtDM(weekStart)}</title>
+<style>body{font-family:Segoe UI,Arial,sans-serif;color:#20303B;margin:24px}
+h1{color:#E8622A;margin:0 0 2px;font-size:20px}.sub{color:#5B6B78;margin:0 0 14px;font-size:13px}
+.est{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-size:12px}
+table{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:18px}
+th,td{border:1px solid #ccc;padding:6px 8px;vertical-align:top;text-align:left}
+th{background:#F4F6F8}.turno{font-weight:700;white-space:nowrap}.sm{font-size:10px;color:#5B6B78}
+.c{text-align:center}h2{font-size:14px;margin:14px 0 6px}
+@media print{body{margin:10mm}@page{size:landscape}}</style></head><body>
+<h1>Horario semanal — ${store.code} ${store.name}</h1>
+<p class="sub">Semana ${fmtDM(weekStart)} al ${fmtDM(weekEnd)} · <span class="est" style="background:${aprobado ? "#D1FAE5" : "#FEF3C7"};color:${aprobado ? "#065F46" : "#92400E"}">${aprobado ? "APROBADO" : "BORRADOR — no aprobado"}</span></p>
+<table><thead><tr><th>Turno</th>${th}</tr></thead><tbody>${filas}</tbody></table>
+<h2>Resumen por colaborador</h2>
+<table><thead><tr><th>Colaborador</th><th>Área</th><th class="c">Turnos</th><th class="c">Horas</th></tr></thead><tbody>${res}</tbody></table>
+<script>window.onload=function(){window.print()}<\/script></body></html>`);
+    w.document.close();
+  };
   const loadAdherence = async () => {
     setAdhBusy(true);
     try { setAdh(await adhFn({ data: { storeId, weekStart } }) as AdhResult); }
@@ -2257,10 +2304,19 @@ function SchedulePlannerPanel() {
           {schedule && (
             <>
               <div className="bg-card rounded-2xl border border-border overflow-hidden">
-                <div className="p-4 border-b border-border">
-                  <h3 className="font-semibold text-foreground">Horario propuesto</h3>
-                  <p className="text-xs text-muted-foreground">Editable a mano: <b>×</b> quita un turno, <b>+ agregar</b> asigna a alguien para completar horas o huecos. Las reglas se revalidan al instante.</p>
+                <div className="p-4 border-b border-border flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <h3 className="font-semibold text-foreground">Horario propuesto</h3>
+                    <p className="text-xs text-muted-foreground">Editable a mano: <b>×</b> quita un turno · <b>+ agregar</b> asigna a cualquier agente (te avisa si rompe una regla) · <b>toca un nombre</b> para ver toda su semana.</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={printSchedule}><Printer className="h-4 w-4 mr-1" /> Imprimir</Button>
                 </div>
+                {selEmp && (
+                  <div className="px-4 py-2 bg-secondary/40 border-b border-border flex items-center justify-between gap-2 flex-wrap text-sm">
+                    <span>Resaltando a <b>{nameOf(selEmp)}</b>{(() => { const s = summary.find((x) => x.id === selEmp); return s ? ` · ${s.turns} turno(s) · ${s.hours}h de ${s.horasMeta}h` : ""; })()}</span>
+                    <button type="button" className="text-xs text-muted-foreground underline" onClick={() => setSelEmp(null)}>quitar resaltado</button>
+                  </div>
+                )}
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm min-w-[820px]">
                     <thead><tr className="bg-secondary/50">
@@ -2279,20 +2335,24 @@ function SchedulePlannerPanel() {
                               return (
                                 <td key={d} className="p-1.5 align-top">
                                   <div className="flex flex-col gap-1">
-                                    {arr.map((it, i) => (
-                                      <span key={i} className={`text-xs rounded-md border pl-2 pr-1 py-1 flex items-center gap-1 ${st.chip} ${(it as SchedAssign).role === "APOYO" ? "opacity-70 border-dashed" : ""} ${(it as SchedAssign).supportFrom ? "border-orange-400 border-dashed" : ""}`}>
-                                        <span className="flex-1 leading-tight">{nameOf(it.id)}{(it as SchedAssign).role === "APOYO" ? " · apoyo" : ""}{(it as SchedAssign).supportFrom ? " · cruzado" : ""}</span>
-                                        <button type="button" onClick={() => removeFromCell(k, d, i)} className="leading-none px-1 text-muted-foreground hover:text-red-600" title="Quitar turno">×</button>
-                                      </span>
-                                    ))}
+                                    {arr.map((it, i) => {
+                                      const a = it as SchedAssign;
+                                      const sel = selEmp === it.id;
+                                      return (
+                                        <span key={i} className={`text-xs rounded-md border pl-2 pr-1 py-1 flex items-center gap-1 ${st.chip} ${a.role === "APOYO" ? "opacity-70 border-dashed" : ""} ${a.supportFrom ? "border-orange-400 border-dashed" : ""} ${a.override ? "ring-1 ring-amber-500" : ""} ${sel ? "ring-2 ring-foreground/70 font-semibold" : ""}`}>
+                                          <button type="button" onClick={() => setSelEmp(sel ? null : it.id)} className="flex-1 text-left leading-tight" title="Ver todos los turnos de este agente">
+                                            {nameOf(it.id)}{a.role === "APOYO" ? " · apoyo" : ""}{a.supportFrom ? " · cruzado" : ""}{a.override ? " ⚠" : ""}
+                                          </button>
+                                          <button type="button" onClick={() => removeFromCell(k, d, i)} className="leading-none px-1 text-muted-foreground hover:text-red-600" title="Quitar turno">×</button>
+                                        </span>
+                                      );
+                                    })}
+                                    {/* Todos los agentes: el GT decide a quién darle el turno (no se sugiere). */}
                                     <select value="" onChange={(e) => { addToCell(k, d, e.target.value); e.currentTarget.value = ""; }} className="text-[11px] h-6 rounded border border-dashed border-border bg-background/60 text-muted-foreground">
                                       <option value="">+ agregar…</option>
-                                      {team.filter((p) => {
-                                        if (arr.some((a) => a.id === p.id)) return false;                                   // ya en la celda
-                                        if (SCH_SHIFT_KEYS.some((sk) => schedule[sk][d].some((a) => a.id === p.id))) return false; // ya tiene turno ese día
-                                        const sa = SCH_SHIFT_DEF[k].area;
-                                        return p.area === sa || (sa === "MBK" && p.area === "PRODUCTOS" && !!p.mbkQ);        // misma área o Productos calificado cruzando a MBK
-                                      }).map((p) => <option key={p.id} value={p.id}>{p.nombre}{SCH_SHIFT_DEF[k].area === "MBK" && p.area === "PRODUCTOS" ? " (cruzado)" : ""}</option>)}
+                                      {team.filter((p) => !arr.some((a) => a.id === p.id)).map((p) => (
+                                        <option key={p.id} value={p.id}>{p.nombre} · {p.area === "MBK" ? "MBK" : "Prod"}</option>
+                                      ))}
                                     </select>
                                   </div>
                                   {caja < need && <span className="mt-1 inline-block text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1.5">falta {need - caja}</span>}

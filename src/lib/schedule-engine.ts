@@ -39,6 +39,9 @@ export interface Assignment {
   exception?: string;
   intercambio?: boolean;
   fromArea?: string;
+  /** El GT asignó esto a mano rompiendo a propósito una regla (doble turno 24h o
+   * cruce de área). Baja esa regla de ROJA a advertencia: él manda, pero queda visible. */
+  override?: boolean;
 }
 export type Schedule = Record<ShiftKey, Assignment[][]>; // [shiftKey][0..6] = asignaciones
 export interface Alert { level: "ok" | "warn" | "bad"; type: string; text: string }
@@ -410,9 +413,24 @@ export function generate(input: GenInput): GenOutput {
       if (arr.some((a) => a.meta.supportFrom)) alerts.push({ level: "warn", type: "support", text: `${p.nombre} apoyó a MBK (cruzado).` });
       arr.forEach((a) => { if (restricted(p, a.dayIndex, a.shiftKey) && !a.meta.exception) alerts.push({ level: "bad", type: "restr", text: `${p.nombre} asignado en restricción (${DAYS[a.dayIndex]} / ${SHIFT_DEF[a.shiftKey].short}).` }); });
       const dias: Record<number, number> = {}; arr.forEach((a) => { dias[a.dayIndex] = (dias[a.dayIndex] || 0) + 1; });
-      Object.keys(dias).filter((d) => dias[+d] > 1).forEach((d) => alerts.push({ level: "bad", type: "doblete", text: `${p.nombre} tiene DOBLETE el ${DAYS[+d]} (AM+PM): imposible, 1 turno por día.` }));
-      // Área: nadie debe estar en un turno de otra área, salvo Productos cruzado a MBK (con supportFrom).
-      arr.forEach((a) => { const sa = SHIFT_DEF[a.shiftKey].area; if (p.area !== sa && !(p.area === "PRODUCTOS" && sa === "MBK" && a.meta.supportFrom === "PRODUCTOS" && p.mbkQ)) alerts.push({ level: "bad", type: "area", text: `${p.nombre} (${p.area === "MBK" ? "MBK" : "Productos"}) asignado a ${SHIFT_DEF[a.shiftKey].short}, que es de otra área${p.area === "PRODUCTOS" && sa === "MBK" && !p.mbkQ ? " (sin calificación para Bankito)" : ""}.` }); });
+      // Doble turno (AM+PM el mismo día = 24h): ROJO, salvo que el GT lo haya autorizado a mano.
+      Object.keys(dias).filter((d) => dias[+d] > 1).forEach((d) => {
+        const autorizado = arr.some((a) => a.dayIndex === +d && a.meta.override);
+        alerts.push(autorizado
+          ? { level: "warn", type: "doblete", text: `${p.nombre} hace DOBLE TURNO el ${DAYS[+d]} (24h) — autorizado por el GT.` }
+          : { level: "bad", type: "doblete", text: `${p.nombre} tiene DOBLETE el ${DAYS[+d]} (AM+PM): imposible, 1 turno por día.` });
+      });
+      // Área: nadie en un turno de otra área, salvo el cruce válido Productos→MBK (calificado
+      // y con supportFrom) o que el GT lo haya autorizado a mano.
+      arr.forEach((a) => {
+        const sa = SHIFT_DEF[a.shiftKey].area;
+        if (p.area === sa) return;
+        if (p.area === "PRODUCTOS" && sa === "MBK" && a.meta.supportFrom === "PRODUCTOS" && p.mbkQ) return;
+        const quien = `${p.nombre} (${p.area === "MBK" ? "MBK" : "Productos"})`;
+        alerts.push(a.meta.override
+          ? { level: "warn", type: "area", text: `${quien} cubre ${SHIFT_DEF[a.shiftKey].short}, de otra área — autorizado por el GT.` }
+          : { level: "bad", type: "area", text: `${quien} asignado a ${SHIFT_DEF[a.shiftKey].short}, que es de otra área${p.area === "PRODUCTOS" && sa === "MBK" && !p.mbkQ ? " (sin calificación para Bankito)" : ""}.` });
+      });
       if (p.area === "PRODUCTOS") {
         const nights = arr.filter((a) => a.shiftKey === "PROD_PM").map((a) => a.dayIndex).sort((x, y) => x - y);
         if (nights.length > MAX_NIGHTS) alerts.push({ level: "bad", type: "nights", text: `${p.nombre} tiene ${nights.length} noches; el máximo es ${MAX_NIGHTS}.` });
