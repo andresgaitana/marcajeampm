@@ -2630,11 +2630,24 @@ function StaffingBudgetCard({ zoneId, storeId }: { zoneId: string; storeId: stri
   else if (zoneId !== "all") args.zoneId = zoneId;
   const { data, isLoading } = useQuery({ queryKey: ["staffing-budget", zoneId, storeId], queryFn: () => fn({ data: args }) });
   const rows = data?.rows ?? [];
-  const t = data?.totals ?? { faltanProd: 0, faltanMbk: 0 };
   const numCell = (real: number, bud: number, falta: number, exc: number) =>
     bud === 0
       ? <span className="text-muted-foreground">{real} <span className="text-[11px]">(sin pres.)</span></span>
       : <><b className={falta > 0 ? "text-red-700" : "text-emerald-700"}>{real}/{bud}</b>{exc > 0 && <span className="text-amber-700 text-xs"> (+{exc})</span>}</>;
+  // Estado por DOTACIÓN TOTAL (Productos + MBK): un excedente en un área compensa un
+  // faltante en la otra. Neto > 0 = Exceso; = 0 = Completa (con nota si hay que
+  // redistribuir); < 0 = Faltan (lo que reclutamiento debe cubrir).
+  const estadoNode = (r: { prodReal: number; prodBud: number; mbkReal: number; mbkBud: number; noBudget: boolean }) => {
+    if (r.noBudget) return <span className="text-muted-foreground">Sin presupuesto</span>;
+    const n = (r.prodReal + r.mbkReal) - (r.prodBud + r.mbkBud);
+    if (n > 0) return <span className="text-amber-700 font-semibold">Exceso (+{n})</span>;
+    if (n < 0) return <span className="text-red-700 font-semibold">Faltan {-n}</span>;
+    if (r.prodReal === r.prodBud) return <span className="text-emerald-700 font-semibold">Completa</span>;
+    const toMbk = r.mbkReal < r.mbkBud;
+    return <span className="text-emerald-700 font-semibold">Completa <span className="text-amber-700 font-normal text-xs">· redistribuir {toMbk ? r.mbkBud - r.mbkReal : r.prodBud - r.prodReal} a {toMbk ? "MBK" : "Prod"}</span></span>;
+  };
+  const netFaltan = rows.reduce((a, r) => a + (r.noBudget ? 0 : Math.max(0, (r.prodBud + r.mbkBud) - (r.prodReal + r.mbkReal))), 0);
+  const netExceso = rows.reduce((a, r) => a + (r.noBudget ? 0 : Math.max(0, (r.prodReal + r.mbkReal) - (r.prodBud + r.mbkBud))), 0);
   return (
     <div className="bg-card rounded-2xl border border-border overflow-hidden">
       <div className="p-4 border-b border-border">
@@ -2661,23 +2674,18 @@ function StaffingBudgetCard({ zoneId, storeId }: { zoneId: string; storeId: stri
                     <TableCell className="font-medium"><b>{r.code}</b> <span className="text-muted-foreground font-normal">{r.name}</span></TableCell>
                     <TableCell className="text-center">{numCell(r.prodReal, r.prodBud, r.faltanProd, r.excProd)}</TableCell>
                     <TableCell className="text-center">{numCell(r.mbkReal, r.mbkBud, r.faltanMbk, r.excMbk)}</TableCell>
-                    <TableCell>
-                      {r.noBudget
-                        ? <span className="text-muted-foreground">Sin presupuesto</span>
-                        : (r.faltanProd > 0 || r.faltanMbk > 0)
-                          ? <span className="text-red-700 font-semibold">{[r.faltanProd > 0 ? `Faltan ${r.faltanProd} Prod` : "", r.faltanMbk > 0 ? `Falta${r.faltanMbk > 1 ? "n" : ""} ${r.faltanMbk} MBK` : ""].filter(Boolean).join(" · ")}</span>
-                          : <span className="text-emerald-700 font-semibold">Completa</span>}
-                    </TableCell>
+                    <TableCell>{estadoNode(r)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </div>
           <div className="p-3 border-t border-border text-sm">
-            {(t.faltanProd + t.faltanMbk) > 0
-              ? <b className="text-red-700">Faltan {t.faltanProd} Productos + {t.faltanMbk} MBK ({t.faltanProd + t.faltanMbk} por reclutar)</b>
+            {netFaltan > 0
+              ? <b className="text-red-700">Faltan {netFaltan} por reclutar</b>
               : <b className="text-emerald-700">Plantilla completa{rows.length === 1 ? "" : " en todas las tiendas"}</b>}
-            <span className="text-xs text-muted-foreground"> · limpieza y seguridad se miden aparte.</span>
+            {netExceso > 0 && <b className="text-amber-700"> · {netExceso} en exceso</b>}
+            <span className="text-xs text-muted-foreground"> · el faltante ya descuenta excedentes de otra área; limpieza y seguridad aparte.</span>
           </div>
         </>
       )}

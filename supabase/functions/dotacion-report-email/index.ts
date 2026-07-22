@@ -55,10 +55,10 @@ function buildHtml(rows: any[], corte: string, dateLabel: string) {
     `<td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top">${cnt(real, plan)}` +
     `<div style="font-size:12px;color:#5B6B78;margin-top:2px">${nameList(people)}</div>` +
     (am ? plant(pReal, pBud) : "") + `</td>`;
-  let totFP = 0, totFM = 0;
+  let netFaltan = 0, netExceso = 0;
   const trs = rows.map((r) => {
-    totFP += Math.max(0, (r.budgetProd ?? 0) - (r.plantProd ?? 0));
-    totFM += Math.max(0, (r.budgetMbk ?? 0) - (r.plantMbk ?? 0));
+    const net = ((r.plantProd ?? 0) + (r.plantMbk ?? 0)) - ((r.budgetProd ?? 0) + (r.budgetMbk ?? 0));
+    if (net < 0) netFaltan += -net; else if (net > 0) netExceso += net;
     const ready = r.prodReal >= r.prodPlan && r.mbkReal >= r.mbkPlan;
     return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top"><b>${r.code}</b> ${r.name}</td>` +
       cell(r.prodReal, r.prodPlan, r.prodPeople ?? [], r.plantProd ?? 0, r.budgetProd ?? 0) +
@@ -66,7 +66,7 @@ function buildHtml(rows: any[], corte: string, dateLabel: string) {
       `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;vertical-align:top;color:${ready ? "#137A4B" : "#B45309"};font-weight:700">${ready ? "Listo" : "Falta"}</td></tr>`;
   }).join("");
   const recl = am
-    ? `<p style="color:#20303B;font-size:13px;margin-top:8px">Plantilla vs presupuesto — ${(totFP + totFM) > 0 ? `<b style="color:#B91C1C">faltan ${totFP} Productos + ${totFM} MBK por reclutar</b>` : `<b style="color:#137A4B">plantilla completa en todas las tiendas</b>`}. Los polivalentes cuentan en MBK; limpieza y seguridad se miden aparte.</p>`
+    ? `<p style="color:#20303B;font-size:13px;margin-top:8px">Plantilla vs presupuesto — ${netFaltan > 0 ? `<b style="color:#B91C1C">faltan ${netFaltan} por reclutar</b>` : `<b style="color:#137A4B">plantilla completa</b>`}${netExceso > 0 ? ` <span style="color:#8A5A00">· ${netExceso} en exceso</span>` : ``}. El faltante ya descuenta excedentes de otra área. Los polivalentes cuentan en MBK; limpieza y seguridad aparte.</p>`
     : "";
   return `<div style="font-family:Segoe UI,Arial,sans-serif;color:#20303B">` +
     `<h2 style="color:#E8622A;margin:0 0 4px">Dotación real por tienda — Turno ${corte}</h2>` +
