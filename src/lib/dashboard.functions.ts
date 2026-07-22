@@ -1374,22 +1374,25 @@ export const getStaffingBudgetReport = createServerFn({ method: "POST" })
       plantByStore.set(sid, p);
     }
 
-    let faltanProd = 0, faltanMbk = 0;
     const rows = (stores ?? []).map((s) => {
       const b = budgetByStore.get(s.id as string) as { prod_agents: number | null; mbk_agents: number | null } | undefined;
       const prodBud = b?.prod_agents ?? 0, mbkBud = b?.mbk_agents ?? 0;
       const pl = plantByStore.get(s.id as string) ?? { prod: 0, mbk: 0 };
-      const fProd = Math.max(0, prodBud - pl.prod), fMbk = Math.max(0, mbkBud - pl.mbk);
-      faltanProd += fProd; faltanMbk += fMbk;
       return {
         code: s.code as string, name: s.name as string,
         prodReal: pl.prod, prodBud, mbkReal: pl.mbk, mbkBud,
-        faltanProd: fProd, faltanMbk: fMbk,
+        faltanProd: Math.max(0, prodBud - pl.prod), faltanMbk: Math.max(0, mbkBud - pl.mbk),
         excProd: Math.max(0, pl.prod - prodBud), excMbk: Math.max(0, pl.mbk - mbkBud),
         noBudget: prodBud === 0 && mbkBud === 0,
       };
-    }).sort((a, b) => (b.faltanProd + b.faltanMbk) - (a.faltanProd + a.faltanMbk) || (a.code < b.code ? -1 : 1));
-    return { rows, totals: { faltanProd, faltanMbk } };
+    })
+      // Solo tiendas ONBOARDED (con al menos 1 agente cargado); evita listar tiendas aún
+      // sin personal en la app como si tuvieran un faltante total. Una tienda filtrada por
+      // storeId siempre se muestra (para que el GT vea la suya aunque esté vacía).
+      .filter((r) => r.prodReal + r.mbkReal > 0 || !!data.storeId)
+      .sort((a, b) => (b.faltanProd + b.faltanMbk) - (a.faltanProd + a.faltanMbk) || (a.code < b.code ? -1 : 1));
+    const totals = rows.reduce((acc, r) => ({ faltanProd: acc.faltanProd + r.faltanProd, faltanMbk: acc.faltanMbk + r.faltanMbk }), { faltanProd: 0, faltanMbk: 0 });
+    return { rows, totals };
   });
 
 // ── ADHERENCIA: plan del horario vs marcaje real (Fase 2) ──
