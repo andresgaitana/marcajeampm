@@ -97,7 +97,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     // 1) Validate terminal (store + terminal PIN)
     const { data: store } = await supabaseAdmin
       .from("stores")
-      .select("id, code, name, terminal_pin_hash, active, latitude, longitude, geofence_radius_m, zone_id")
+      .select("id, code, name, terminal_pin_hash, active, latitude, longitude, geofence_radius_m, zone_id, skip_geofence")
       .eq("code", data.storeCode)
       .maybeSingle();
     if (!store || !store.active) return { ok: false as const, error: "Terminal no válida. Reconfigura la tienda." };
@@ -269,28 +269,33 @@ export const markAttendance = createServerFn({ method: "POST" })
     // y la presencia la refuerzan el terminal fijo + la selfie en vivo + el rostro.
     let distanceM: number | null = null;
     let locationOverrideBy: string | null = null;
-    if (store.latitude == null || store.longitude == null) {
-      return { ok: false as const, error: "Esta tienda no tiene ubicación configurada. Contacta al administrador." };
-    }
-    const hasLoc = data.latitude != null && data.longitude != null;
-    if (hasLoc) distanceM = haversineMeters(store.latitude, store.longitude, data.latitude as number, data.longitude as number);
-    const locationValid = hasLoc && (distanceM as number) <= (store.geofence_radius_m ?? 300);
-    if (!locationValid) {
-      const credsGiven = !!(data.supervisorCode || data.supervisorPin);
-      const sup = credsGiven
-        ? await validateSupervisorOverride(data.supervisorCode, data.supervisorPin, store)
-        : null;
-      if (!sup) {
-        if (credsGiven) {
-          // Credencial enviada pero inválida → mensaje claro (igual que el override facial).
-          return { ok: false as const, error: "Supervisor no válido o sin autoridad en esta tienda.", needsSupervisor: true as const };
-        }
-        const base = !hasLoc
-          ? "No se pudo obtener la ubicación del dispositivo."
-          : `Estás a ${Math.round(distanceM as number)}m de la tienda (máx ${store.geofence_radius_m ?? 300}m).`;
-        return { ok: false as const, error: `${base} Un supervisor (Gerente) puede autorizar el marcaje.`, needsSupervisor: true as const };
+    let locationValid = true;
+    let hasLoc = false;
+    // Tiendas demo/capacitación (skip_geofence) NO validan geocerca: marcan desde cualquier lugar.
+    if (!store.skip_geofence) {
+      if (store.latitude == null || store.longitude == null) {
+        return { ok: false as const, error: "Esta tienda no tiene ubicación configurada. Contacta al administrador." };
       }
-      locationOverrideBy = sup;
+      hasLoc = data.latitude != null && data.longitude != null;
+      if (hasLoc) distanceM = haversineMeters(store.latitude, store.longitude, data.latitude as number, data.longitude as number);
+      locationValid = hasLoc && (distanceM as number) <= (store.geofence_radius_m ?? 300);
+      if (!locationValid) {
+        const credsGiven = !!(data.supervisorCode || data.supervisorPin);
+        const sup = credsGiven
+          ? await validateSupervisorOverride(data.supervisorCode, data.supervisorPin, store)
+          : null;
+        if (!sup) {
+          if (credsGiven) {
+            // Credencial enviada pero inválida → mensaje claro (igual que el override facial).
+            return { ok: false as const, error: "Supervisor no válido o sin autoridad en esta tienda.", needsSupervisor: true as const };
+          }
+          const base = !hasLoc
+            ? "No se pudo obtener la ubicación del dispositivo."
+            : `Estás a ${Math.round(distanceM as number)}m de la tienda (máx ${store.geofence_radius_m ?? 300}m).`;
+          return { ok: false as const, error: `${base} Un supervisor (Gerente) puede autorizar el marcaje.`, needsSupervisor: true as const };
+        }
+        locationOverrideBy = sup;
+      }
     }
 
     // Upload selfie (data URL -> bytes)

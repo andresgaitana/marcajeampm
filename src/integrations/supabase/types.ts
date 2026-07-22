@@ -407,6 +407,7 @@ export type Database = {
           created_at: string
           geofence_radius_m: number
           id: string
+          skip_geofence: boolean
           latitude: number | null
           longitude: number | null
           name: string
@@ -421,6 +422,7 @@ export type Database = {
           created_at?: string
           geofence_radius_m?: number
           id?: string
+          skip_geofence?: boolean
           latitude?: number | null
           longitude?: number | null
           name: string
@@ -435,6 +437,7 @@ export type Database = {
           created_at?: string
           geofence_radius_m?: number
           id?: string
+          skip_geofence?: boolean
           latitude?: number | null
           longitude?: number | null
           name?: string
