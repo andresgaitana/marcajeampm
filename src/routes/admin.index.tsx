@@ -1988,6 +1988,12 @@ const emptySchedGrid = (): SchedGrid => {
   return g;
 };
 const cloneSchedGrid = (g: SchedGrid): SchedGrid => JSON.parse(JSON.stringify(g));
+/** Nombre compacto para la rejilla (primer nombre + último apellido). El completo va en
+ * el title y en la impresión, para que las celdas no ensanchen la tabla. */
+const shortName = (full: string) => {
+  const p = String(full || "").trim().split(/\s+/);
+  return p.length <= 2 ? full : `${p[0]} ${p[p.length - 1]}`;
+};
 type AdhResult =
   | { found: false; weekStart: string }
   | {
@@ -2279,7 +2285,7 @@ th{background:#F4F6F8}.turno{font-weight:700;white-space:nowrap}.sm{font-size:10
                         </select>
                       </TableCell>
                       <TableCell>
-                        <Input defaultValue={p.noDisponible} onBlur={(e) => { if (e.target.value !== p.noDisponible) updateTeamAttr(p.id, { noDisponible: e.target.value }, { no_disponible: e.target.value }); }} placeholder="Ej. Viernes, Sábado" className="h-8 w-40" />
+                        <Input defaultValue={p.noDisponible} onBlur={(e) => { if (e.target.value !== p.noDisponible) updateTeamAttr(p.id, { noDisponible: e.target.value }, { no_disponible: e.target.value }); }} placeholder="Ej. Viernes" className="h-8 w-28" />
                       </TableCell>
                       <TableCell className="text-right">
                         <Input type="number" min={8} max={60} defaultValue={p.horasMeta} onBlur={(e) => { const v = Number(e.target.value) || 48; if (v !== p.horasMeta) updateTeamAttr(p.id, { horasMeta: v }, { horas_meta: v }); }} className="h-8 w-16 text-right" />
@@ -2318,44 +2324,46 @@ th{background:#F4F6F8}.turno{font-weight:700;white-space:nowrap}.sm{font-size:10
                   </div>
                 )}
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm min-w-[820px]">
+                  <table className="w-full text-sm table-fixed min-w-[600px]">
                     <thead><tr className="bg-secondary/50">
-                      <th className="text-left p-2 font-medium w-40">Turno</th>
-                      {SCH_DAYS.map((d, i) => <th key={i} className="p-2 text-left font-medium">{d.slice(0, 3)}<br /><span className="text-xs font-normal text-muted-foreground">{fmtDM(addDaysISO(weekStart, i))}</span></th>)}
+                      <th className="text-left p-1.5 font-medium w-[72px]">Turno</th>
+                      {SCH_DAYS.map((d, i) => <th key={i} className="p-1.5 text-left font-medium">{d.slice(0, 3)}<br /><span className="text-[10px] font-normal text-muted-foreground">{fmtDM(addDaysISO(weekStart, i))}</span></th>)}
                     </tr></thead>
                     <tbody>
                       {SCH_SHIFT_KEYS.map((k) => {
                         const st = SCHEDULE_ROW_STYLES[k] ?? { label: "", chip: "bg-secondary border-border" };
                         return (
                           <tr key={k} className="border-t border-border align-top">
-                            <td className={`p-2 font-semibold ${st.label}`}>{SCH_SHIFT_DEF[k].short}</td>
+                            <td className={`p-1.5 text-xs font-semibold leading-tight ${st.label}`}>{SCH_SHIFT_DEF[k].short}</td>
                             {schedule[k].map((arr, d) => {
                               const need = coverage[k][d];
                               const caja = arr.filter((a) => (a as SchedAssign).role !== "APOYO").length;
                               return (
-                                <td key={d} className="p-1.5 align-top">
+                                <td key={d} className="p-1 align-top">
                                   <div className="flex flex-col gap-1">
                                     {arr.map((it, i) => {
                                       const a = it as SchedAssign;
                                       const sel = selEmp === it.id;
+                                      const marcas = [a.role === "APOYO" ? "apoyo" : "", a.supportFrom ? "cruzado" : "", a.override ? "⚠ autorizado" : ""].filter(Boolean).join(" · ");
                                       return (
-                                        <span key={i} className={`text-xs rounded-md border pl-2 pr-1 py-1 flex items-center gap-1 ${st.chip} ${a.role === "APOYO" ? "opacity-70 border-dashed" : ""} ${a.supportFrom ? "border-orange-400 border-dashed" : ""} ${a.override ? "ring-1 ring-amber-500" : ""} ${sel ? "ring-2 ring-foreground/70 font-semibold" : ""}`}>
-                                          <button type="button" onClick={() => setSelEmp(sel ? null : it.id)} className="flex-1 text-left leading-tight" title="Ver todos los turnos de este agente">
-                                            {nameOf(it.id)}{a.role === "APOYO" ? " · apoyo" : ""}{a.supportFrom ? " · cruzado" : ""}{a.override ? " ⚠" : ""}
+                                        <span key={i} className={`text-[11px] rounded-md border px-1.5 py-1 flex items-start gap-1 ${st.chip} ${a.role === "APOYO" ? "opacity-70 border-dashed" : ""} ${a.supportFrom ? "border-orange-400 border-dashed" : ""} ${a.override ? "ring-1 ring-amber-500" : ""} ${sel ? "ring-2 ring-foreground/70 font-semibold" : ""}`}>
+                                          <button type="button" onClick={() => setSelEmp(sel ? null : it.id)} className="flex-1 min-w-0 text-left leading-tight break-words" title={`${nameOf(it.id)}${marcas ? ` (${marcas})` : ""} — ver toda su semana`}>
+                                            {shortName(nameOf(it.id))}
+                                            {marcas ? <span className="block text-[9px] opacity-75">{marcas}</span> : null}
                                           </button>
-                                          <button type="button" onClick={() => removeFromCell(k, d, i)} className="leading-none px-1 text-muted-foreground hover:text-red-600" title="Quitar turno">×</button>
+                                          <button type="button" onClick={() => removeFromCell(k, d, i)} className="leading-none shrink-0 text-muted-foreground hover:text-red-600" title="Quitar turno">×</button>
                                         </span>
                                       );
                                     })}
                                     {/* Todos los agentes: el GT decide a quién darle el turno (no se sugiere). */}
-                                    <select value="" onChange={(e) => { addToCell(k, d, e.target.value); e.currentTarget.value = ""; }} className="text-[11px] h-6 rounded border border-dashed border-border bg-background/60 text-muted-foreground">
+                                    <select value="" onChange={(e) => { addToCell(k, d, e.target.value); e.currentTarget.value = ""; }} className="w-full min-w-0 text-[10px] h-6 rounded border border-dashed border-border bg-background/60 text-muted-foreground">
                                       <option value="">+ agregar…</option>
                                       {team.filter((p) => !arr.some((a) => a.id === p.id)).map((p) => (
                                         <option key={p.id} value={p.id}>{p.nombre} · {p.area === "MBK" ? "MBK" : "Prod"}</option>
                                       ))}
                                     </select>
                                   </div>
-                                  {caja < need && <span className="mt-1 inline-block text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1.5">falta {need - caja}</span>}
+                                  {caja < need && <span className="mt-1 inline-block text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1">falta {need - caja}</span>}
                                 </td>
                               );
                             })}
