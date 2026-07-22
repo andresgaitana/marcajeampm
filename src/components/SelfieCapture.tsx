@@ -25,6 +25,42 @@ interface Props {
 // o fallback si el parpadeo falla / no carga el motor).
 type LiveState = "scanning" | "manual";
 
+// El enlace abierto DENTRO de otra app (WhatsApp, Facebook, Instagram) corre en un
+// WebView: no hay barra de direcciones ni candado, y la cámara suele venir denegada
+// por la app anfitriona. Ahí el consejo de "toca el candado" es imposible de seguir.
+const isInAppBrowser = () => /FBAN|FBAV|Instagram|Line\/|WhatsApp|; wv\)/i.test(navigator.userAgent || "");
+
+// Primero pedimos la cámara frontal; si el equipo no la soporta, reintentamos sin exigir nada.
+const CAM_CONSTRAINTS: MediaStreamConstraints[] = [
+  { video: { facingMode: "user", width: 640, height: 480 }, audio: false },
+  { video: true, audio: false },
+];
+
+// Mensaje según la causa REAL. Antes se descartaba el error y siempre se culpaba al
+// permiso: el GT revisaba el candado, lo veía permitido y se quedaba atascado.
+const cameraErrorMessage = (name: string) => {
+  switch (name) {
+    case "NotAllowedError":
+    case "PermissionDeniedError":
+    case "SecurityError":
+      return isInAppBrowser()
+        ? "Abriste el enlace dentro de otra app (WhatsApp/Facebook) y ahí la cámara está bloqueada. Toca los 3 puntos → «Abrir en Chrome» y marca desde ahí."
+        : "La cámara está bloqueada para esta página. Toca el candado 🔒 en la barra de direcciones → Permisos → Cámara → Permitir, y reintenta.";
+    case "NotReadableError":
+    case "TrackStartError":
+    case "AbortError":
+      return "Otra aplicación está usando la cámara. Cierra la app de Cámara y las otras pestañas del marcaje, y reintenta.";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "Este equipo no tiene cámara disponible. Marca desde la tablet de la tienda.";
+    case "OverconstrainedError":
+    case "ConstraintNotSatisfiedError":
+      return "No se pudo iniciar la cámara de este equipo. Reintenta; si sigue, cierra y vuelve a abrir el navegador.";
+    default:
+      return "No se pudo abrir la cámara. Reintenta; si sigue, cierra y vuelve a abrir el navegador.";
+  }
+};
+
 export function SelfieCapture({
   onCapture,
   onCancel,
@@ -44,6 +80,9 @@ export function SelfieCapture({
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Nombre técnico del fallo (NotAllowedError, NotReadableError…). Se muestra pequeño para
+  // que en el piloto baste una captura de pantalla para saber la causa.
+  const [errCode, setErrCode] = useState<string | null>(null);
   const [computing, setComputing] = useState(false);
   const [faceError, setFaceError] = useState<string | null>(null);
   const [live, setLive] = useState<LiveState>(useLiveness ? "scanning" : "manual");
@@ -77,27 +116,57 @@ export function SelfieCapture({
   // Abrir la cámara (reutilizable: el botón "Reintentar cámara" la vuelve a invocar).
   const openCamera = useCallback(() => {
     setError(null);
+    setErrCode(null);
     // Precargar los modelos de reconocimiento facial (CDN) mientras el usuario se acomoda.
     loadFaceModels();
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false })
-      .then((s) => {
-        if (!mountedRef.current) {
-          s.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        setStream(s);
-        if (videoRef.current) {
-          videoRef.current.srcObject = s;
-          videoRef.current.play().catch(() => {});
-        }
-      })
-      .catch(() => {
-        if (mountedRef.current)
-          setError(
-            "No se pudo acceder a la cámara. Toca el candado en la barra de direcciones, permite la cámara y reintenta.",
-          );
-      });
+
+    // Sin contexto seguro (http://IP en vez de https://) el navegador ni siquiera expone
+    // la API: sin esta guarda reventaba con un TypeError fuera del .catch (pantalla en blanco).
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrCode("sin-api");
+      setError(
+        window.isSecureContext === false
+          ? "El navegador bloquea la cámara porque la página no se abrió con https. Usa el enlace oficial del marcaje y reintenta."
+          : "Este navegador no permite usar la cámara. Abre el enlace en Chrome (Android) o Safari (iPad).",
+      );
+      return;
+    }
+
+    const attempt = (idx: number, retriedBusy: boolean) => {
+      navigator.mediaDevices
+        .getUserMedia(CAM_CONSTRAINTS[idx])
+        .then((s) => {
+          if (!mountedRef.current) {
+            s.getTracks().forEach((t) => t.stop());
+            return;
+          }
+          setStream(s);
+          if (videoRef.current) {
+            videoRef.current.srcObject = s;
+            videoRef.current.play().catch(() => {});
+          }
+        })
+        .catch((e: unknown) => {
+          if (!mountedRef.current) return;
+          const name = (e as DOMException)?.name || "Error";
+          // La tablet no soporta lo que pedimos → reintentar con la cámara "como sea".
+          if (name !== "NotAllowedError" && idx + 1 < CAM_CONSTRAINTS.length) {
+            attempt(idx + 1, retriedBusy);
+            return;
+          }
+          // Cámara ocupada: casi siempre es la pantalla anterior soltando el stream,
+          // así que un reintento corto lo resuelve sin que el usuario haga nada.
+          if ((name === "NotReadableError" || name === "TrackStartError" || name === "AbortError") && !retriedBusy) {
+            window.setTimeout(() => {
+              if (mountedRef.current) attempt(0, true);
+            }, 900);
+            return;
+          }
+          setErrCode(name);
+          setError(cameraErrorMessage(name));
+        });
+    };
+    attempt(0, false);
   }, []);
 
   useEffect(() => {
@@ -195,8 +264,9 @@ export function SelfieCapture({
     <div className="flex flex-col items-center gap-4 w-full">
       <div className="relative w-full max-w-md aspect-[4/3] overflow-hidden rounded-2xl border-2 border-border bg-black shadow-[var(--shadow-soft)]">
         {error ? (
-          <div className="absolute inset-0 flex items-center justify-center text-center p-6 text-destructive-foreground bg-destructive/80">
-            {error}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center p-6 text-destructive-foreground bg-destructive/80">
+            <span>{error}</span>
+            {errCode && <span className="text-[11px] opacity-70">código: {errCode}</span>}
           </div>
         ) : preview ? (
           // eslint-disable-next-line jsx-a11y/alt-text
