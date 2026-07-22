@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence, getStaffingBudgetReport } from "@/lib/dashboard.functions";
 import { getScheduleContext, generateSchedule, saveSchedule, setEmployeeScheduleAttrs } from "@/lib/schedule.functions";
 import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, validate as schedValidate, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
 import { SelfieCapture } from "@/components/SelfieCapture";
@@ -1853,6 +1853,8 @@ function DashboardPanel() {
 
       <DotacionStoreTable rows={m.by_store} prodCorte={m.prod_corte ?? "AM"} mbkCorte={m.mbk_corte ?? "AM"} />
 
+      <StaffingBudgetCard zoneId={filter.zoneId} storeId={filter.storeId} />
+
       {m.stuck_open.length > 0 && (
         <div className="bg-card border border-[oklch(0.7_0.18_50)] rounded-2xl p-4">
           <div className="flex items-center gap-2 mb-2 text-[oklch(0.65_0.18_50)] font-semibold">
@@ -2618,6 +2620,68 @@ function DotCoverCell({ real, plan }: { real: number; plan: number }) {
     <span className={`text-sm font-medium ${plan === 0 ? "text-muted-foreground" : ok ? "text-[oklch(0.55_0.14_155)]" : "text-amber-700"}`}>
       {real}/{plan}
     </span>
+  );
+}
+
+function StaffingBudgetCard({ zoneId, storeId }: { zoneId: string; storeId: string }) {
+  const fn = useServerFn(getStaffingBudgetReport);
+  const args: { storeId?: string; zoneId?: string } = {};
+  if (storeId !== "all") args.storeId = storeId;
+  else if (zoneId !== "all") args.zoneId = zoneId;
+  const { data, isLoading } = useQuery({ queryKey: ["staffing-budget", zoneId, storeId], queryFn: () => fn({ data: args }) });
+  const rows = data?.rows ?? [];
+  const t = data?.totals ?? { faltanProd: 0, faltanMbk: 0 };
+  const numCell = (real: number, bud: number, falta: number, exc: number) =>
+    bud === 0
+      ? <span className="text-muted-foreground">{real} <span className="text-[11px]">(sin pres.)</span></span>
+      : <><b className={falta > 0 ? "text-red-700" : "text-emerald-700"}>{real}/{bud}</b>{exc > 0 && <span className="text-amber-700 text-xs"> (+{exc})</span>}</>;
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border">
+        <h3 className="font-semibold text-foreground">Personal contratado vs presupuesto</h3>
+        <p className="text-xs text-muted-foreground">Agentes activos cargados vs dotación autorizada. Los polivalentes cuentan en MBK. El "faltan" es lo que reclutamiento debe cubrir.</p>
+      </div>
+      {isLoading ? (
+        <div className="p-6 text-center text-muted-foreground text-sm">Cargando…</div>
+      ) : rows.length === 0 ? (
+        <div className="p-6 text-center text-muted-foreground text-sm">Sin tiendas en tu alcance.</div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader><TableRow className="bg-secondary/50">
+                <TableHead>Tienda</TableHead>
+                <TableHead className="text-center">Productos<br /><span className="text-[11px] font-normal text-muted-foreground">real / presup.</span></TableHead>
+                <TableHead className="text-center">MBK<br /><span className="text-[11px] font-normal text-muted-foreground">real / presup.</span></TableHead>
+                <TableHead>Estado</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={r.code}>
+                    <TableCell className="font-medium"><b>{r.code}</b> <span className="text-muted-foreground font-normal">{r.name}</span></TableCell>
+                    <TableCell className="text-center">{numCell(r.prodReal, r.prodBud, r.faltanProd, r.excProd)}</TableCell>
+                    <TableCell className="text-center">{numCell(r.mbkReal, r.mbkBud, r.faltanMbk, r.excMbk)}</TableCell>
+                    <TableCell>
+                      {r.noBudget
+                        ? <span className="text-muted-foreground">Sin presupuesto</span>
+                        : (r.faltanProd > 0 || r.faltanMbk > 0)
+                          ? <span className="text-red-700 font-semibold">{[r.faltanProd > 0 ? `Faltan ${r.faltanProd} Prod` : "", r.faltanMbk > 0 ? `Falta${r.faltanMbk > 1 ? "n" : ""} ${r.faltanMbk} MBK` : ""].filter(Boolean).join(" · ")}</span>
+                          : <span className="text-emerald-700 font-semibold">Completa</span>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="p-3 border-t border-border text-sm">
+            {(t.faltanProd + t.faltanMbk) > 0
+              ? <b className="text-red-700">Faltan {t.faltanProd} Productos + {t.faltanMbk} MBK ({t.faltanProd + t.faltanMbk} por reclutar)</b>
+              : <b className="text-emerald-700">Plantilla completa{rows.length === 1 ? "" : " en todas las tiendas"}</b>}
+            <span className="text-xs text-muted-foreground"> · limpieza y seguridad se miden aparte.</span>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

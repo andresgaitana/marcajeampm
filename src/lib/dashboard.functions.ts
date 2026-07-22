@@ -1331,6 +1331,67 @@ function scoreMarcaje(olvidos: number, ajustes: number): number {
   return s;
 }
 
+/** Plantilla contratada vs presupuesto por tienda (validación tienda ↔ reclutamiento).
+ * Productos = cajeros activos NO polivalentes; MBK = agentes MBK + cajeros polivalentes.
+ * Alcanzado por getScope (admin=todas, GZ=su zona, GT=su tienda) + filtro store/zone. */
+export const getStaffingBudgetReport = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid().optional(),
+      zoneId: z.string().uuid().optional(),
+    }).parse(i ?? {}),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    let effective: string[] | "all" = scope.storeIds;
+    if (data.storeId) {
+      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+    } else if (data.zoneId) {
+      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+      let ids = (zs ?? []).map((s) => s.id as string);
+      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+      effective = ids;
+    }
+
+    let storeQ = supabaseAdmin.from("stores").select("id, code, name").eq("active", true);
+    if (effective !== "all") storeQ = storeQ.in("id", effective.length ? effective : ["00000000-0000-0000-0000-000000000000"]);
+    const { data: stores } = await storeQ;
+    const storeIds = (stores ?? []).map((s) => s.id as string);
+    if (!storeIds.length) return { rows: [], totals: { faltanProd: 0, faltanMbk: 0 } };
+
+    const [{ data: staffing }, { data: emps }] = await Promise.all([
+      supabaseAdmin.from("store_staffing").select("store_id, prod_agents, mbk_agents").in("store_id", storeIds),
+      supabaseAdmin.from("employees").select("store_id, role, polivalente").eq("active", true).in("role", ["cajero", "agente_mbk"]).in("store_id", storeIds),
+    ]);
+    const budgetByStore = new Map((staffing ?? []).map((x) => [x.store_id as string, x]));
+    const plantByStore = new Map<string, { prod: number; mbk: number }>();
+    for (const e of emps ?? []) {
+      const sid = e.store_id as string;
+      const toMbk = e.role === "agente_mbk" || (e.role === "cajero" && (e as { polivalente?: boolean | null }).polivalente === true);
+      const p = plantByStore.get(sid) ?? { prod: 0, mbk: 0 };
+      if (toMbk) p.mbk++; else p.prod++;
+      plantByStore.set(sid, p);
+    }
+
+    let faltanProd = 0, faltanMbk = 0;
+    const rows = (stores ?? []).map((s) => {
+      const b = budgetByStore.get(s.id as string) as { prod_agents: number | null; mbk_agents: number | null } | undefined;
+      const prodBud = b?.prod_agents ?? 0, mbkBud = b?.mbk_agents ?? 0;
+      const pl = plantByStore.get(s.id as string) ?? { prod: 0, mbk: 0 };
+      const fProd = Math.max(0, prodBud - pl.prod), fMbk = Math.max(0, mbkBud - pl.mbk);
+      faltanProd += fProd; faltanMbk += fMbk;
+      return {
+        code: s.code as string, name: s.name as string,
+        prodReal: pl.prod, prodBud, mbkReal: pl.mbk, mbkBud,
+        faltanProd: fProd, faltanMbk: fMbk,
+        excProd: Math.max(0, pl.prod - prodBud), excMbk: Math.max(0, pl.mbk - mbkBud),
+        noBudget: prodBud === 0 && mbkBud === 0,
+      };
+    }).sort((a, b) => (b.faltanProd + b.faltanMbk) - (a.faltanProd + a.faltanMbk) || (a.code < b.code ? -1 : 1));
+    return { rows, totals: { faltanProd, faltanMbk } };
+  });
+
 // ── ADHERENCIA: plan del horario vs marcaje real (Fase 2) ──
 const PLAN_SHIFT: Record<string, { area: "productos" | "mbk"; turno: "AM" | "PM"; start: number; label: string }> = {
   PROD_AM: { area: "productos", turno: "AM", start: 6 * 60, label: "Prod AM" },
