@@ -1695,6 +1695,25 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
   });
 
 // ───────────────────── Marcaje de Gerentes (GT y GZ) ─────────────────────
+/**
+ * Hora de entrada de los Gerentes de Tienda y de Zona: 8:00 en TODAS las tiendas
+ * (regla de la operación, confirmada por el usuario el 23/07/2026). Se usa la misma
+ * tolerancia que el resto del sistema.
+ *
+ * Solo se evalúa la puntualidad de las entradas de la mañana: si un gerente marca
+ * por la tarde (cubriendo un PM o una emergencia), compararlo contra las 8:00 diría
+ * "6 horas tarde", que es ruido, no información.
+ */
+const MANAGER_START_MIN = 8 * 60;
+const MANAGER_AM_FROM = 4 * 60;
+const MANAGER_AM_TO = 12 * 60;
+function managerPunctuality(mins: number | null) {
+  if (mins === null || mins < MANAGER_AM_FROM || mins >= MANAGER_AM_TO)
+    return { atraso: null as number | null, tarde: false, evaluable: false };
+  const atraso = mins - MANAGER_START_MIN;
+  return { atraso, tarde: atraso > LATE_TOLERANCE_MIN, evaluable: true };
+}
+
 // El Gerente de Zona necesita ver si SUS Gerentes de Tienda marcaron y a qué hora;
 // la Administración, además, el recorrido diario de cada Gerente de Zona: en qué
 // tienda inició y en cuál cerró. El GT no ve este bloque (no se vigila a sí mismo).
@@ -1730,14 +1749,47 @@ export const getManagerMarks = createServerFn({ method: "POST" })
       effective = ids;
     }
 
-    let eq = supabaseAdmin
-      .from("employees")
-      .select("id, full_name, employee_code, role, store_id")
-      .eq("active", true)
-      .in("role", isSuper ? ["gerente", "gerente_zona"] : ["gerente"]);
-    if (effective !== "all") eq = eq.in("store_id", effective);
-    const { data: mgrs } = await eq;
-    const managers = (mgrs ?? []) as Array<{ id: string; full_name: string; employee_code: string; role: string; store_id: string }>;
+    const { data: sts } = await supabaseAdmin.from("stores").select("id, code, name, zone_id");
+    const storeById = new Map((sts ?? []).map((s) => [s.id as string, s as { id: string; code: string; name: string; zone_id: string | null }]));
+
+    // Solo tiendas VIVAS (con marcaje en los últimos 30 días). Sin esto, para un
+    // administrador el bloque listaría los 87 Gerentes de Tienda con 78 en "sin
+    // marcar", simplemente porque su tienda aún no entra al piloto. Si el usuario
+    // eligió una tienda concreta en el filtro, se respeta su elección.
+    let zonasVivas: Set<string> | null = null;
+    if (!data.storeId) {
+      const { data: live } = await supabaseAdmin.rpc("tiendas_con_marcaje", { dias: 30 });
+      const liveIds = new Set((live ?? []).map((r: { store_id: string }) => r.store_id));
+      if (liveIds.size) {
+        effective = effective === "all" ? [...liveIds] : effective.filter((id) => liveIds.has(id));
+        // El Gerente de Zona se filtra por ZONA viva, no por su tienda ancla: su
+        // ancla puede no ser la que está marcando y desaparecería de la lista.
+        zonasVivas = new Set(
+          [...liveIds].map((id) => storeById.get(id)?.zone_id).filter((z): z is string => !!z),
+        );
+      }
+    }
+
+    const baseSel = "id, full_name, employee_code, role, store_id";
+    let gq = supabaseAdmin.from("employees").select(baseSel).eq("active", true).eq("role", "gerente");
+    if (effective !== "all") gq = gq.in("store_id", effective);
+    const { data: gtRows } = await gq;
+
+    type MgrRow = { id: string; full_name: string; employee_code: string; role: string; store_id: string };
+    let zonalRows: MgrRow[] = [];
+    if (isSuper) {
+      const { data: gzRows } = await supabaseAdmin
+        .from("employees").select(baseSel).eq("active", true).eq("role", "gerente_zona");
+      zonalRows = ((gzRows ?? []) as MgrRow[]).filter((z) => {
+        if (scope.storeIds !== "all" && !scope.storeIds.includes(z.store_id)) return false;
+        if (data.storeId) return z.store_id === data.storeId;
+        const zona = storeById.get(z.store_id)?.zone_id ?? null;
+        if (data.zoneId) return zona === data.zoneId;
+        return !zonasVivas || (!!zona && zonasVivas.has(zona));
+      });
+    }
+
+    const managers = [...((gtRows ?? []) as MgrRow[]), ...zonalRows];
     if (!managers.length) return { gerentes: [], zonales: [], verZonales: isSuper, fecha: todayStr };
 
     // Marcajes de HOY de esos gerentes, en CUALQUIER tienda (el GZ recorre su zona).
@@ -1749,8 +1801,6 @@ export const getManagerMarks = createServerFn({ method: "POST" })
       .order("created_at", { ascending: true })
       .limit(4000);
 
-    const { data: sts } = await supabaseAdmin.from("stores").select("id, code, name, zone_id");
-    const storeById = new Map((sts ?? []).map((s) => [s.id as string, s as { id: string; code: string; name: string; zone_id: string | null }]));
     const { data: zns } = await supabaseAdmin.from("zones").select("id, name");
     const zoneById = new Map((zns ?? []).map((z) => [z.id as string, z.name as string]));
 
@@ -1775,32 +1825,30 @@ export const getManagerMarks = createServerFn({ method: "POST" })
         const first = entradas[0];
         const last = salidas[salidas.length - 1];
         const st = storeById.get(m.store_id);
-        // Sin bandera de "tarde": el GT no tiene una hora de entrada definida en el
-        // sistema y los datos reales muestran entradas entre 7:20 y 8:38, así que
-        // compararlas contra el turno de Productos (6:00) marcaría a todos como
-        // atrasados. Se muestra el hecho —la hora— ordenado de más tarde a más
-        // temprano, que es lo que permite detectar al que se está descuidando.
         const mins = first ? localMinsOf(first.created_at) : null;
+        const punt = managerPunctuality(mins);
         return {
           id: m.id,
           name: m.full_name,
           code: m.employee_code,
           tienda: st ? `${st.code} · ${st.name}` : "—",
           tiendaCode: st?.code ?? "—",
-          turno: mins === null ? null : mins >= 300 && mins < 1020 ? "AM" : "PM",
           entrada: first ? hhmm(first.created_at) : null,
           entradaTienda: first ? codeOf(first.store_id) : null,
           salida: last ? hhmm(last.created_at) : null,
           salidaTienda: last ? codeOf(last.store_id) : null,
           minsEntrada: mins,
+          atraso: punt.atraso,
+          tarde: punt.tarde,
+          evaluable: punt.evaluable,
           dentro: !!first && !last,
         };
       })
-      // Primero quien no ha marcado; después, el que entró más tarde.
+      // Primero quien no ha marcado; después, el más atrasado.
       .sort((a, b) => {
         if (!a.entrada && b.entrada) return -1;
         if (a.entrada && !b.entrada) return 1;
-        return (b.minsEntrada ?? 0) - (a.minsEntrada ?? 0);
+        return (b.atraso ?? -9999) - (a.atraso ?? -9999);
       });
 
     const zonales = !isSuper ? [] : managers
@@ -1812,11 +1860,17 @@ export const getManagerMarks = createServerFn({ method: "POST" })
         const first = entradas[0];
         const last = salidas[salidas.length - 1];
         const anchor = storeById.get(m.store_id);
+        // El GZ también entra a las 8:00; se mide contra su PRIMER marcaje del día,
+        // que es donde arranca el recorrido.
+        const punt = managerPunctuality(first ? localMinsOf(first.created_at) : null);
         return {
           id: m.id,
           name: m.full_name,
           code: m.employee_code,
           zona: anchor?.zone_id ? (zoneById.get(anchor.zone_id) ?? "—") : "—",
+          atraso: punt.atraso,
+          tarde: punt.tarde,
+          evaluable: punt.evaluable,
           inicioHora: first ? hhmm(first.created_at) : null,
           inicioTienda: first ? codeOf(first.store_id) : null,
           cierreHora: last ? hhmm(last.created_at) : null,

@@ -2619,6 +2619,7 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
   const gts = data.gerentes ?? [];
   const gzs = data.zonales ?? [];
   const sinMarcar = gts.filter((g) => !g.entrada).length;
+  const tarde = gts.filter((g) => g.tarde).length;
 
   return (
     <div className="space-y-4">
@@ -2631,8 +2632,11 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
               {sinMarcar} sin marcar
             </Badge>
           )}
+          {tarde > 0 && (
+            <Badge variant="outline" className="border-amber-500 text-amber-700">{tarde} tarde</Badge>
+          )}
           <p className="w-full text-xs text-muted-foreground">
-            Entrada y salida de hoy · ordenado del que entró más tarde al más temprano
+            Entrada contra las 8:00 (tolerancia 5 min) · ordenado del más atrasado
           </p>
         </div>
         {gts.length === 0 ? (
@@ -2664,17 +2668,23 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
                       )}
                     </TableCell>
                     <TableCell className="font-mono text-sm">
-                      {g.salida ?? <span className="text-muted-foreground font-sans">—</span>}
+                      {g.salida ?? (
+                        g.dentro
+                          ? <span className="text-xs text-muted-foreground font-sans">en tienda</span>
+                          : <span className="text-muted-foreground font-sans">—</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       {!g.entrada ? (
                         <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">Sin marcar</Badge>
-                      ) : g.dentro ? (
-                        <Badge className="bg-[oklch(0.65_0.16_155)] text-white hover:bg-[oklch(0.65_0.16_155)]">
-                          {g.turno} · en tienda
+                      ) : !g.evaluable ? (
+                        <Badge variant="secondary">fuera del turno 8:00</Badge>
+                      ) : g.tarde ? (
+                        <Badge variant="outline" className="border-amber-500 text-amber-700">
+                          {g.atraso} min tarde
                         </Badge>
                       ) : (
-                        <Badge variant="secondary">{g.turno} · salió</Badge>
+                        <Badge className="bg-[oklch(0.65_0.16_155)] text-white hover:bg-[oklch(0.65_0.16_155)]">A tiempo</Badge>
                       )}
                     </TableCell>
                   </TableRow>
@@ -2691,7 +2701,7 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
             <h3 className="font-semibold text-foreground">Marcaje · Gerentes de Zona</h3>
             <Badge variant="outline">{gzs.length}</Badge>
             <p className="w-full text-xs text-muted-foreground">
-              Recorrido de hoy: dónde inició, dónde cerró y en cuántas tiendas marcó
+              Recorrido de hoy: dónde inició (contra las 8:00), dónde cerró y en cuántas tiendas marcó
             </p>
           </div>
           {gzs.length === 0 ? (
@@ -2718,7 +2728,15 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
                       <TableCell className="text-muted-foreground text-sm">{z.zona}</TableCell>
                       <TableCell className="text-sm">
                         {z.inicioHora ? (
-                          <><span className="font-mono">{z.inicioHora}</span> · <span className="font-mono text-muted-foreground">{z.inicioTienda}</span></>
+                          <>
+                            <div>
+                              <span className="font-mono">{z.inicioHora}</span> ·{" "}
+                              <span className="font-mono text-muted-foreground">{z.inicioTienda}</span>
+                            </div>
+                            {z.evaluable && z.tarde && (
+                              <div className="text-[11px] text-amber-700">{z.atraso} min tarde</div>
+                            )}
+                          </>
                         ) : (
                           <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">Sin marcar</Badge>
                         )}

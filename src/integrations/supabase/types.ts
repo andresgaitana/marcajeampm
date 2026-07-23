@@ -601,6 +601,13 @@ export type Database = {
         Args: { _user_id: string; _zone_id: string }
         Returns: boolean
       }
+      /** Tiendas con al menos un marcaje en los últimos N días (excluye CAPACITACION). */
+      tiendas_con_marcaje: {
+        Args: { dias?: number }
+        Returns: {
+          store_id: string
+        }[]
+      }
     }
     Enums: {
       app_role:
