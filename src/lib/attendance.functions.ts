@@ -224,7 +224,7 @@ export const markAttendance = createServerFn({ method: "POST" })
     if (!isEnrolled && employee.role !== "seguridad_tercerizada") {
       return {
         ok: false as const,
-        error: "No tienes tu rostro registrado. Pídele a tu Gerente que te enrole antes de marcar.",
+        error: "Aún no tienes tu rostro registrado. Un administrador debe enrolarlo desde el panel (Colaboradores → botón de cámara) antes de que puedas marcar. La selfie de este marcaje NO es el enrolamiento.",
       };
     }
     let faceOverrideBy: string | null = null;

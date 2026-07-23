@@ -491,6 +491,10 @@ function EmployeesPanel() {
   // La seguridad tercerizada es cuenta rotativa compartida; el GZ no es de tienda.
   const needsCedula = (role: string) => role !== "seguridad_tercerizada" && role !== "gerente_zona";
   const missingCedula = employees.filter((e) => e.active && needsCedula(e.role) && !e.cedula);
+  // Todos marcan con rostro EXCEPTO la seguridad tercerizada (cuenta rotativa). Sin el
+  // rostro de referencia, la persona no puede marcar: es el paso que más se olvida.
+  const needsFace = (role: string) => role !== "seguridad_tercerizada";
+  const missingFace = employees.filter((e) => e.active && needsFace(e.role) && !e.face_enrolled_at);
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<(typeof employees)[number] | null>(null);
@@ -507,6 +511,7 @@ function EmployeesPanel() {
   });
   const [showRefCapture, setShowRefCapture] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [enrollFor, setEnrollFor] = useState<{ id: string; name: string } | null>(null);
 
   useEffect(() => {
     if (editing) {
@@ -847,6 +852,30 @@ function EmployeesPanel() {
         </div>
       )}
 
+      {missingFace.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-1 text-red-800 font-semibold">
+            <Camera className="h-4 w-4" /> Pendiente: enrolar rostro
+          </div>
+          <p className="text-sm text-red-800">
+            {missingFace.length} colaborador(es) SIN rostro registrado: no pueden marcar hasta enrolarlos.
+            Toca a cada uno para abrir su ficha y usa el botón de cámara. La selfie del marcaje no cuenta como enrolamiento.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {missingFace.slice(0, 40).map((e) => (
+              <button
+                key={e.id}
+                onClick={() => { setEnrollFor({ id: e.id, name: e.full_name }); }}
+                className="text-xs rounded-md border border-red-300 bg-white text-red-800 px-2 py-1 hover:bg-red-100"
+              >
+                {e.full_name} <span className="font-mono opacity-70">{e.employee_code}</span>
+              </button>
+            ))}
+            {missingFace.length > 40 && <span className="text-xs text-red-700 self-center">+{missingFace.length - 40} más</span>}
+          </div>
+        </div>
+      )}
+
       <div className="bg-card rounded-2xl border border-border overflow-hidden">
         <Table>
           <TableHeader>
@@ -894,9 +923,22 @@ function EmployeesPanel() {
                     {e.must_change_pin && (
                       <Badge variant="outline" className="border-amber-500 text-amber-700">PIN 1234 · por cambiar</Badge>
                     )}
+                    {e.active && needsFace(e.role) && !e.face_enrolled_at && (
+                      <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">Sin rostro</Badge>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
+                  {needsFace(e.role) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={e.face_enrolled_at ? "Rostro registrado · volver a tomar" : "Enrolar rostro (necesario para marcar)"}
+                      onClick={() => setEnrollFor({ id: e.id, name: e.full_name })}
+                    >
+                      <Camera className={`h-4 w-4 ${e.face_enrolled_at ? "text-[oklch(0.6_0.13_155)]" : "text-destructive"}`} />
+                    </Button>
+                  )}
                   <FingerprintButton employeeId={e.id} employeeName={e.full_name} />
                   {canResetPin(e.role) && (
                     <Button variant="ghost" size="sm" title="Restablecer PIN a 1234" onClick={() => resetPin(e.id, e.full_name)}>
@@ -930,6 +972,12 @@ function EmployeesPanel() {
           </TableBody>
         </Table>
       </div>
+
+      <EnrollFaceDialog
+        employee={enrollFor}
+        onClose={() => setEnrollFor(null)}
+        onDone={() => qc.invalidateQueries({ queryKey: ["employees"] })}
+      />
     </div>
   );
 }
@@ -3684,6 +3732,66 @@ function FingerprintButton({ employeeId, employeeName }: { employeeId: string; e
             </div>
           ))}
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Enrolar el rostro de referencia de un colaborador (foto que el marcaje usa para
+ * verificar identidad). Es un paso de UNA SOLA VEZ, separado del marcaje: la selfie
+ * del marcaje NO enrola. Sin este rostro, la persona no puede marcar. Diálogo
+ * controlado: se abre desde la fila o desde el aviso de "pendiente enrolar rostro".
+ */
+function EnrollFaceDialog({
+  employee,
+  onClose,
+  onDone,
+}: {
+  employee: { id: string; name: string } | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const updateFn = useServerFn(updateEmployee);
+  const [saving, setSaving] = useState(false);
+
+  const save = async (descriptor: number[] | null) => {
+    if (!employee) return;
+    if (!descriptor) {
+      toast.error("No se detectó el rostro. Acércate a la cámara con buena luz e inténtalo de nuevo.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateFn({ data: { id: employee.id, face_descriptor: descriptor } });
+      toast.success(`Rostro de ${employee.name} registrado. Ya puede marcar.`);
+      onClose();
+      onDone();
+    } catch (e) {
+      toast.error(errorMsg(e, "No se pudo guardar el rostro"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!employee} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Enrolar rostro · {employee?.name}</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          Foto de referencia con la que el marcaje verificará su identidad. Es de una sola vez.
+          Buena luz, rostro de frente y sin lentes oscuros. {saving && "Guardando…"}
+        </p>
+        {employee && (
+          <SelfieCapture
+            requireDescriptor
+            confirmLabel="Guardar rostro"
+            onCapture={(_url, desc) => save(desc)}
+            onCancel={onClose}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );
