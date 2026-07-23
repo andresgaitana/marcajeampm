@@ -1,8 +1,12 @@
 // Supabase Edge Function (Deno): envía por correo la "Dotación real por tienda"
 // del corte (AM/PM) a GT (su tienda), GZ (su zona) y GO/Admin (todas), por SMTP.
 //
-// Body opcional: { corte:"AM"|"PM", pilotZones:["MGA_SUR"], dryRun:true, testTo:"x@y",
-//   secret:"..." }. Sin corte, se infiere por hora NI. pilotZones limita a esas zonas.
+// Body opcional: { corte:"AM"|"PM", dryRun:true, testTo:"x@y", secret:"...",
+//   pilotZones:["MGA_SUR"], allStores:true, liveDays:30 }.
+// Sin corte, se infiere por hora NI.
+// ALCANCE: por defecto entran solas las tiendas que YA tienen agentes marcando
+// (últimos liveDays días, 30 por defecto). pilotZones lo fija a mano por zona;
+// allStores lo abre a todas las tiendas activas.
 // dryRun devuelve la lista de destinatarios sin enviar. testTo envía solo a esa dirección.
 //
 // Secretos: SMTP_HOST, SMTP_PORT, SMTP_SECURE ("true" p/465), SMTP_USER, SMTP_PASS,
@@ -117,10 +121,24 @@ Deno.serve(async (req) => {
     ]);
     const [stores, staffing, emps, recs, uroles, uzones, smgrs, zonesData] = parts.map((r) => r.data ?? []) as any[];
 
+    // Alcance del correo. Por defecto AUTOMÁTICO: entran las tiendas que ya tienen
+    // agentes marcando (últimos LIVE_DAYS días), así una tienda nueva se suma sola el
+    // día que arranca, sin tener que acordarse de agregar su zona a mano. La tienda
+    // demo de capacitación queda excluida dentro de la función tiendas_con_marcaje.
+    //   pilotZones:["MGA_SUR"] → override manual por zona.
+    //   allStores:true         → todas las tiendas activas (sin filtro).
     let pilotStoreIdSet: Set<string> | null = null;
     if (Array.isArray(body?.pilotZones) && body.pilotZones.length) {
       const pilotZoneIds = new Set(zonesData.filter((z: any) => body.pilotZones.includes(z.code)).map((z: any) => z.id));
       pilotStoreIdSet = new Set(stores.filter((s: any) => s.zone_id && pilotZoneIds.has(s.zone_id)).map((s: any) => s.id));
+    } else if (body?.allStores !== true) {
+      const LIVE_DAYS = Number(body?.liveDays ?? 30);
+      const { data: live, error: liveErr } = await supabase.rpc("tiendas_con_marcaje", { dias: LIVE_DAYS });
+      // Si no se pudo determinar, se aborta en vez de mandarle el reporte a las 90
+      // tiendas: un correo de más a toda la operación es peor que uno de menos.
+      if (liveErr) return Response.json({ ok: false, error: `no se pudieron determinar las tiendas activas: ${liveErr.message}` }, { status: 500 });
+      const activeIds = new Set((live ?? []).map((r: any) => r.store_id));
+      pilotStoreIdSet = new Set(stores.filter((s: any) => activeIds.has(s.id)).map((s: any) => s.id));
     }
 
     const staffMap = new Map(staffing.map((x: any) => [x.store_id, x]));

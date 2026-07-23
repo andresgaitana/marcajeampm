@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence, getStaffingBudgetReport } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence, getStaffingBudgetReport, getManagerMarks } from "@/lib/dashboard.functions";
 import { getScheduleContext, generateSchedule, saveSchedule, setEmployeeScheduleAttrs } from "@/lib/schedule.functions";
 import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, validate as schedValidate, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
 import { SelfieCapture } from "@/components/SelfieCapture";
@@ -1965,6 +1965,10 @@ function DashboardPanel() {
         <OvertimeCard rows={m.overtime_today} />
       </div>
 
+      {/* Marcaje de gerentes: el GZ ve a sus GT; la Administración ve además el
+          recorrido de cada GZ. El GT no lo ve. */}
+      {(isZone || isSuper) && <ManagerMarksCards storeId={filter.storeId} zoneId={filter.zoneId} />}
+
       {isZone && (
         <div className="grid lg:grid-cols-2 gap-4">
           <StoreExecTable title="Por tienda (mi zona)" subtitle="Presentes / colaboradores y actividad" rows={m.by_store} />
@@ -2596,6 +2600,154 @@ function KPI({ label, value, accent, sub }: { label: string; value: number | str
   );
 }
 
+/**
+ * Marcaje de gerentes del día. Para el Gerente de Zona: si sus Gerentes de Tienda
+ * marcaron y a qué hora. Para la Administración: además el recorrido de cada
+ * Gerente de Zona (en qué tienda inició y en cuál cerró).
+ */
+function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: string }) {
+  const fn = useServerFn(getManagerMarks);
+  const args: { storeId?: string; zoneId?: string } = {};
+  if (storeId !== "all") args.storeId = storeId;
+  else if (zoneId !== "all") args.zoneId = zoneId;
+  const { data } = useQuery({
+    queryKey: ["managerMarks", zoneId, storeId],
+    queryFn: () => fn({ data: args }),
+    refetchInterval: 60_000,
+  });
+  if (!data) return null;
+  const gts = data.gerentes ?? [];
+  const gzs = data.zonales ?? [];
+  const sinMarcar = gts.filter((g) => !g.entrada).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-card rounded-2xl border border-border overflow-hidden">
+        <div className="p-4 border-b border-border flex items-center gap-2 flex-wrap">
+          <h3 className="font-semibold text-foreground">Marcaje · Gerentes de Tienda</h3>
+          <Badge variant="outline">{gts.length}</Badge>
+          {sinMarcar > 0 && (
+            <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">
+              {sinMarcar} sin marcar
+            </Badge>
+          )}
+          <p className="w-full text-xs text-muted-foreground">
+            Entrada y salida de hoy · ordenado del que entró más tarde al más temprano
+          </p>
+        </div>
+        {gts.length === 0 ? (
+          <p className="p-6 text-center text-sm text-muted-foreground">Sin Gerentes de Tienda en este alcance.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-secondary/50">
+                  <TableHead>Gerente</TableHead>
+                  <TableHead>Tienda</TableHead>
+                  <TableHead>Entrada</TableHead>
+                  <TableHead>Salida</TableHead>
+                  <TableHead className="text-right">Estado</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {gts.map((g) => (
+                  <TableRow key={g.id}>
+                    <TableCell>
+                      <div className="font-medium text-foreground">{g.name}</div>
+                      <div className="text-xs text-muted-foreground font-mono">{g.code}</div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">{g.tienda}</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {g.entrada ?? <span className="text-destructive font-sans">—</span>}
+                      {g.entrada && g.entradaTienda && g.entradaTienda !== g.tiendaCode && (
+                        <div className="text-[11px] text-amber-700 font-sans">en {g.entradaTienda}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {g.salida ?? <span className="text-muted-foreground font-sans">—</span>}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {!g.entrada ? (
+                        <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">Sin marcar</Badge>
+                      ) : g.dentro ? (
+                        <Badge className="bg-[oklch(0.65_0.16_155)] text-white hover:bg-[oklch(0.65_0.16_155)]">
+                          {g.turno} · en tienda
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary">{g.turno} · salió</Badge>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+
+      {data.verZonales && (
+        <div className="bg-card rounded-2xl border border-border overflow-hidden">
+          <div className="p-4 border-b border-border flex items-center gap-2 flex-wrap">
+            <h3 className="font-semibold text-foreground">Marcaje · Gerentes de Zona</h3>
+            <Badge variant="outline">{gzs.length}</Badge>
+            <p className="w-full text-xs text-muted-foreground">
+              Recorrido de hoy: dónde inició, dónde cerró y en cuántas tiendas marcó
+            </p>
+          </div>
+          {gzs.length === 0 ? (
+            <p className="p-6 text-center text-sm text-muted-foreground">Sin Gerentes de Zona en este alcance.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-secondary/50">
+                    <TableHead>Gerente de Zona</TableHead>
+                    <TableHead>Zona</TableHead>
+                    <TableHead>Inició</TableHead>
+                    <TableHead>Cerró</TableHead>
+                    <TableHead className="text-right">Tiendas</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {gzs.map((z) => (
+                    <TableRow key={z.id}>
+                      <TableCell>
+                        <div className="font-medium text-foreground">{z.name}</div>
+                        <div className="text-xs text-muted-foreground font-mono">{z.code}</div>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{z.zona}</TableCell>
+                      <TableCell className="text-sm">
+                        {z.inicioHora ? (
+                          <><span className="font-mono">{z.inicioHora}</span> · <span className="font-mono text-muted-foreground">{z.inicioTienda}</span></>
+                        ) : (
+                          <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">Sin marcar</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {z.cierreHora ? (
+                          <><span className="font-mono">{z.cierreHora}</span> · <span className="font-mono text-muted-foreground">{z.cierreTienda}</span></>
+                        ) : z.dentro ? (
+                          <span className="text-xs text-muted-foreground">en recorrido</span>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="font-semibold text-foreground">{z.paradas}</div>
+                        {z.recorrido.length > 1 && (
+                          <div className="text-[11px] text-muted-foreground font-mono">{z.recorrido.join(" → ")}</div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InsideCard({ inside }: { inside: Array<{ id: string; full_name: string; employee_code: string; since: string }> }) {
   return (
     <div className="bg-card rounded-2xl border border-border overflow-hidden">
@@ -2682,7 +2834,7 @@ function OvertimeCard({ rows }: { rows?: Array<{ id: string; name: string; code:
   return (
     <div className="bg-card rounded-2xl border border-border overflow-hidden">
       <div className="p-4 border-b border-border flex items-center gap-2">
-        <h3 className="font-semibold text-foreground">Salidas fuera de hora — posible extra</h3>
+        <h3 className="font-semibold text-foreground">Salidas fuera de hora</h3>
         <Badge variant="outline" className="border-amber-500 text-amber-700">{list.length}</Badge>
       </div>
       {list.length === 0 ? (
