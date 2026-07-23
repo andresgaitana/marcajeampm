@@ -9,6 +9,7 @@ import {
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { employeeCanMarkAtStore } from "./marcaje-auth.server";
+import { normalizeEmployeeCode } from "./employee-code";
 
 function rpInfo() {
   const req = getRequest();
@@ -150,7 +151,8 @@ export const beginWebauthnAuth = createServerFn({ method: "POST" })
       .from("stores").select("id, zone_id").eq("code", data.storeCode).maybeSingle();
     if (!store) return { ok: false as const, error: "Tienda no encontrada" };
     const { data: emp } = await supabaseAdmin
-      .from("employees").select("id, role, store_id, active").eq("employee_code", data.employeeCode).maybeSingle();
+      .from("employees").select("id, role, store_id, active")
+      .eq("employee_code_canon", normalizeEmployeeCode(data.employeeCode)).maybeSingle();
     if (!emp || !emp.active) return { ok: false as const, error: "Colaborador no válido" };
     if (!(await employeeCanMarkAtStore(emp, store)))
       return { ok: false as const, error: "Colaborador no pertenece a esta tienda" };

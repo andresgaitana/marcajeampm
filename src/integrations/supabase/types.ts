@@ -173,7 +173,11 @@ export type Database = {
           puesto_horario: string
           cedula: string | null
           created_at: string
+          deactivated_at: string | null
+          deactivated_by: string | null
           employee_code: string
+          /** Forma canónica (A-Z0-9) del código, calculada por la base. Única en toda la empresa. */
+          employee_code_canon: string | null
           face_descriptor: number[] | null
           face_enrolled_at: string | null
           failed_selfie_attempts: number
@@ -199,6 +203,8 @@ export type Database = {
           puesto_horario?: string
           cedula?: string | null
           created_at?: string
+          deactivated_at?: string | null
+          deactivated_by?: string | null
           employee_code: string
           face_descriptor?: number[] | null
           face_enrolled_at?: string | null
@@ -225,6 +231,8 @@ export type Database = {
           puesto_horario?: string
           cedula?: string | null
           created_at?: string
+          deactivated_at?: string | null
+          deactivated_by?: string | null
           employee_code?: string
           face_descriptor?: number[] | null
           face_enrolled_at?: string | null

@@ -3,6 +3,49 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { hashPin } from "./pin.server";
+import { normalizeEmployeeCode, CODE_HELP } from "./employee-code";
+
+/** Roles que un Gerente de Tienda puede administrar (sus Agentes, no otros gerentes). */
+const AGENT_ROLES = [
+  "cajero", "agente_mbk", "personal_limpieza",
+  "seguridad_interna", "seguridad_tercerizada", "seguridad",
+];
+
+/**
+ * Verifica que el código no esté ya en uso por OTRO colaborador, comparando en
+ * forma canónica: "A0301" choca con "A03-01" y con "a0301". La base tiene además
+ * un índice único sobre esa forma, así que esto es solo para dar un mensaje
+ * entendible antes de que reviente la restricción.
+ *
+ * No revela a quién pertenece el código si está fuera del alcance del usuario.
+ */
+async function assertCodeAvailable(
+  canon: string,
+  scope: AccessScope,
+  excludeId?: string,
+) {
+  let q = supabaseAdmin
+    .from("employees")
+    .select("id, employee_code, full_name, store_id, active")
+    .eq("employee_code_canon", canon);
+  if (excludeId) q = q.neq("id", excludeId);
+  const { data: dup } = await q.maybeSingle();
+  if (!dup) return;
+  const visible = scope.storeIds === "all" || scope.storeIds.includes(dup.store_id);
+  if (visible) {
+    const { data: st } = await supabaseAdmin
+      .from("stores").select("code").eq("id", dup.store_id).maybeSingle();
+    throw new Error(
+      `El código ${canon} ya lo tiene ${dup.full_name}${st ? ` (tienda ${st.code})` : ""}${dup.active ? "" : ", que está dado de baja"}. Escoge otro código.`,
+    );
+  }
+  throw new Error(`El código ${canon} ya está en uso por un colaborador de otra tienda. Escoge otro código.`);
+}
+
+/** Traduce la violación del índice único a un mensaje que el GT entienda. */
+function isDuplicateCodeError(message: string) {
+  return /duplicate key|employees_code_canon_key|employees_employee_code_key/i.test(message);
+}
 
 /** Returns the set of roles the user has from public.user_roles. */
 export async function getUserRoles(userId: string): Promise<string[]> {
@@ -103,7 +146,16 @@ export const listEmployees = createServerFn({ method: "GET" })
   });
 
 const employeeInput = z.object({
-  employee_code: z.string().trim().min(1).max(32).regex(/^[a-zA-Z0-9_-]+$/),
+  // Se guarda SIEMPRE en forma canónica (mayúsculas y números). El GT sigue
+  // eligiendo el código; el sistema solo lo estandariza para que coincida con lo
+  // que el terminal de marcaje entiende.
+  employee_code: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32)
+    .transform(normalizeEmployeeCode)
+    .refine((v) => v.length > 0, CODE_HELP),
   full_name: z.string().trim().min(1).max(120),
   cedula: z.string().trim().max(32).optional(),
   polivalente: z.boolean().optional(),
@@ -125,11 +177,15 @@ export const createEmployee = createServerFn({ method: "POST" })
     // Cajero, Agente MBK o Seguridad. No puede crear Gerente ni Gerente de Zona.
     const isOnlyStoreAdmin =
       scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
-    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(data.role)) {
+    if (isOnlyStoreAdmin && !AGENT_ROLES.includes(data.role)) {
       throw new Error(
         "Como Gerente de Tienda solo puedes crear Agentes: Cajero, Agente MBK, Personal de Limpieza o Seguridad",
       );
     }
+    // El código debe ser único en toda la empresa: el marcaje lo busca sin
+    // filtrar por tienda (un colaborador puede marcar en otra tienda cuando da
+    // cobertura), así que dos códigos iguales harían imposible distinguirlos.
+    await assertCodeAvailable(data.employee_code, scope);
     const { error } = await supabaseAdmin.from("employees").insert({
       employee_code: data.employee_code,
       full_name: data.full_name,
@@ -142,8 +198,12 @@ export const createEmployee = createServerFn({ method: "POST" })
       face_descriptor: data.face_descriptor ?? null,
       face_enrolled_at: data.face_descriptor ? new Date().toISOString() : null,
     });
+    // Red de seguridad para el caso de dos GT creando el mismo código a la vez:
+    // ahí gana la base de datos y traducimos su error técnico.
+    if (error && isDuplicateCodeError(error.message))
+      throw new Error(`El código ${data.employee_code} acaba de ser tomado por otro colaborador. Escoge otro código.`);
     if (error) throw new Error(error.message);
-    return { ok: true };
+    return { ok: true, employee_code: data.employee_code };
   });
 
 // =====================================================================
@@ -324,6 +384,17 @@ export const updateEmployee = createServerFn({ method: "POST" })
     z
       .object({
         id: z.string().uuid(),
+        // Corregir el código cuando el GT lo tecleó mal. Es seguro: ninguna otra
+        // tabla guarda el texto del código, todo se relaciona por el id interno,
+        // así que el historial de marcajes queda intacto.
+        employee_code: z
+          .string()
+          .trim()
+          .min(1)
+          .max(32)
+          .transform(normalizeEmployeeCode)
+          .refine((v) => v.length > 0, CODE_HELP)
+          .optional(),
         full_name: z.string().trim().min(1).max(120).optional(),
         cedula: z.string().trim().max(32).optional(),
         polivalente: z.boolean().optional(),
@@ -339,13 +410,27 @@ export const updateEmployee = createServerFn({ method: "POST" })
     const scope = await getScope(context.userId);
     // Verify current store is in scope
     const { data: current } = await supabaseAdmin
-      .from("employees").select("store_id").eq("id", data.id).maybeSingle();
+      .from("employees").select("store_id, role, active, employee_code").eq("id", data.id).maybeSingle();
     if (!current) throw new Error("Colaborador no encontrado");
     if (scope.storeIds !== "all" && !scope.storeIds.includes(current.store_id))
       throw new Error("No puedes editar este colaborador");
     if (data.store_id && scope.storeIds !== "all" && !scope.storeIds.includes(data.store_id))
       throw new Error("No puedes mover el colaborador a esa tienda");
+    const isOnlyStoreAdmin =
+      scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
+    if (
+      data.employee_code !== undefined &&
+      data.employee_code !== current.employee_code &&
+      isOnlyStoreAdmin &&
+      !AGENT_ROLES.includes(current.role)
+    )
+      throw new Error("Como Gerente de Tienda solo puedes cambiar el código de tus Agentes.");
+    if (data.employee_code !== undefined && data.employee_code !== current.employee_code)
+      await assertCodeAvailable(data.employee_code, scope, data.id);
     const patch: {
+      employee_code?: string;
+      deactivated_at?: string | null;
+      deactivated_by?: string | null;
       full_name?: string;
       cedula?: string | null;
       polivalente?: boolean;
@@ -356,18 +441,29 @@ export const updateEmployee = createServerFn({ method: "POST" })
       face_descriptor?: number[];
       face_enrolled_at?: string;
     } = {};
+    if (data.employee_code !== undefined) patch.employee_code = data.employee_code;
     if (data.full_name !== undefined) patch.full_name = data.full_name;
     if (data.cedula !== undefined) patch.cedula = data.cedula.trim() ? data.cedula.trim() : null;
     if (data.polivalente !== undefined) patch.polivalente = data.polivalente;
     if (data.role !== undefined) patch.role = data.role;
     if (data.store_id !== undefined) patch.store_id = data.store_id;
-    if (data.active !== undefined) patch.active = data.active;
+    if (data.active !== undefined) {
+      patch.active = data.active;
+      // Baja lógica auditada: queda constancia de cuándo dejó de laborar y quién
+      // lo registró. Al reactivarlo (reingreso) se limpia.
+      if (data.active !== current.active) {
+        patch.deactivated_at = data.active ? null : new Date().toISOString();
+        patch.deactivated_by = data.active ? null : context.userId;
+      }
+    }
     if (data.pin !== undefined) patch.pin_hash = hashPin(data.pin);
     if (data.face_descriptor) {
       patch.face_descriptor = data.face_descriptor;
       patch.face_enrolled_at = new Date().toISOString();
     }
     const { error } = await supabaseAdmin.from("employees").update(patch).eq("id", data.id);
+    if (error && isDuplicateCodeError(error.message))
+      throw new Error(`El código ${data.employee_code} acaba de ser tomado por otro colaborador. Escoge otro código.`);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
@@ -414,17 +510,29 @@ export const deleteEmployee = createServerFn({ method: "POST" })
     const isOnlyStoreAdmin =
       scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
     const { data: current } = await supabaseAdmin
-      .from("employees").select("store_id, role").eq("id", data.id).maybeSingle();
+      .from("employees").select("store_id, role, full_name").eq("id", data.id).maybeSingle();
     if (!current) throw new Error("Colaborador no encontrado");
     if (scope.storeIds !== "all" && !scope.storeIds.includes(current.store_id))
       throw new Error("No puedes eliminar este colaborador");
     // Un Gerente de Tienda solo puede eliminar Cajero, Agente MBK o Seguridad de su tienda
     // (no a otros gerentes ni gerentes de zona).
-    if (isOnlyStoreAdmin && !["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(current.role)) {
+    if (isOnlyStoreAdmin && !AGENT_ROLES.includes(current.role)) {
       throw new Error(
         "Como Gerente de Tienda solo puedes eliminar Agentes: Cajero, Agente MBK, Personal de Limpieza o Seguridad",
       );
     }
+    // Todas las llaves hacia employees son ON DELETE CASCADE: borrar de verdad se
+    // llevaría TODOS sus marcajes y cambiaría los números de meses ya cerrados.
+    // Por eso el borrado real queda solo para el registro creado por error, sin
+    // historial; para quien dejó de laborar existe la baja lógica.
+    const { count } = await supabaseAdmin
+      .from("attendance_records")
+      .select("id", { count: "exact", head: true })
+      .eq("employee_id", data.id);
+    if ((count ?? 0) > 0)
+      throw new Error(
+        `No se puede eliminar: ${current.full_name} tiene ${count} marcaje(s) registrados y se perdería su historial. Usa «Dar de baja» para sacarlo de la tienda conservando sus registros.`,
+      );
     const { error } = await supabaseAdmin.from("employees").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };

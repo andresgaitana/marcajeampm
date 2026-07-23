@@ -80,8 +80,9 @@ import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
   Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
-  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2, Printer,
+  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2, Printer, UserMinus, UserCheck,
 } from "lucide-react";
+import { normalizeEmployeeCode, CODE_HELP } from "@/lib/employee-code";
 import { toast } from "sonner";
 
 /** Error boundary del panel: si un panel lanza una excepción, muestra un aviso con
@@ -520,11 +521,18 @@ function EmployeesPanel() {
       toast.error("Selecciona una tienda");
       return;
     }
+    if (!form.employee_code) {
+      toast.error(`Escribe el código del colaborador. ${CODE_HELP}`);
+      return;
+    }
     try {
       if (editing) {
         await updateFn({
           data: {
             id: editing.id,
+            ...(form.employee_code && form.employee_code !== editing.employee_code
+              ? { employee_code: form.employee_code }
+              : {}),
             full_name: form.full_name,
             cedula: form.cedula,
             polivalente: form.role === "cajero" || form.role === "agente_mbk" ? form.polivalente : false,
@@ -556,7 +564,7 @@ function EmployeesPanel() {
             ...(form.face_descriptor ? { face_descriptor: form.face_descriptor } : {}),
           },
         });
-        toast.success("Colaborador creado");
+        toast.success(`Colaborador creado. Marca con el código ${form.employee_code}`);
       }
       setOpen(false);
       setEditing(null);
@@ -567,13 +575,31 @@ function EmployeesPanel() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("¿Eliminar este colaborador? Se borrarán también sus marcajes.")) return;
+    // El servidor solo permite borrar de verdad a quien NO tiene marcajes (un
+    // registro creado por error). Para quien dejó de laborar existe la baja.
+    if (!confirm("¿Eliminar este registro?\n\nSolo se puede eliminar a quien nunca ha marcado. Si ya trabajó, usa «Dar de baja» para conservar su historial.")) return;
     try {
       await deleteFn({ data: { id } });
-      toast.success("Colaborador eliminado");
+      toast.success("Registro eliminado");
       qc.invalidateQueries({ queryKey: ["employees"] });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Error al eliminar");
+    }
+  };
+
+  /** Baja lógica: el colaborador dejó de laborar pero su historial se conserva. */
+  const toggleActive = async (e: { id: string; full_name: string; active: boolean; employee_code: string }) => {
+    const esBaja = e.active;
+    const msg = esBaja
+      ? `¿Dar de baja a ${e.full_name}?\n\nDejará de aparecer en la tienda, en los horarios y en la dotación, y ya no podrá marcar.\nSu historial de marcajes se conserva completo.\n\nSi regresa, lo podés reactivar.`
+      : `¿Reactivar a ${e.full_name}?\n\nVolverá a marcar con su código ${e.employee_code}.`;
+    if (!confirm(msg)) return;
+    try {
+      await updateFn({ data: { id: e.id, active: !e.active } });
+      toast.success(esBaja ? `${e.full_name} quedó dado de baja` : `${e.full_name} fue reactivado`);
+      qc.invalidateQueries({ queryKey: ["employees"] });
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Error al actualizar");
     }
   };
 
@@ -611,12 +637,29 @@ function EmployeesPanel() {
             <div className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-1 -mr-1">
               <div>
                 <Label>Código de empleado</Label>
+                {/* Se normaliza mientras se teclea: el GT ve exactamente lo que se
+                    va a guardar y lo que su colaborador tendrá que teclear al marcar. */}
                 <Input
-                  disabled={!!editing}
                   value={form.employee_code}
-                  onChange={(e) => setForm({ ...form, employee_code: e.target.value })}
-                  placeholder="Ej. 1001"
+                  onChange={(e) =>
+                    setForm({ ...form, employee_code: normalizeEmployeeCode(e.target.value) })
+                  }
+                  placeholder="Ej. A6901"
+                  className="font-mono uppercase"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {CODE_HELP} Es con el que marca, y no se puede repetir en ninguna tienda.
+                </p>
+                {editing && form.employee_code !== editing.employee_code && (
+                  <p className="text-xs text-amber-700 mt-1">
+                    Cambiarás el código de <strong>{editing.employee_code}</strong> a{" "}
+                    <strong>{form.employee_code || "—"}</strong>. Sus marcajes anteriores se
+                    conservan, pero avísale: desde ahora marca con el código nuevo.
+                  </p>
+                )}
               </div>
               <div>
                 <Label>Nombre completo</Label>
@@ -835,13 +878,26 @@ function EmployeesPanel() {
                       <KeyRound className="h-4 w-4 text-amber-600" />
                     </Button>
                   )}
-                  <Button variant="ghost" size="sm" onClick={() => { setEditing(e); setOpen(true); }}>
+                  <Button variant="ghost" size="sm" title="Editar" onClick={() => { setEditing(e); setOpen(true); }}>
                     <Pencil className="h-4 w-4" />
                   </Button>
                   {(!isOnlyStoreAdmin || ["cajero", "agente_mbk", "personal_limpieza", "seguridad_interna", "seguridad_tercerizada", "seguridad"].includes(e.role)) && (
-                    <Button variant="ghost" size="sm" onClick={() => remove(e.id)}>
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+                    <>
+                      {/* Baja lógica: la acción normal cuando alguien deja de laborar. */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title={e.active ? "Dar de baja (conserva su historial)" : "Reactivar"}
+                        onClick={() => toggleActive(e)}
+                      >
+                        {e.active
+                          ? <UserMinus className="h-4 w-4 text-amber-600" />
+                          : <UserCheck className="h-4 w-4 text-[oklch(0.65_0.16_155)]" />}
+                      </Button>
+                      <Button variant="ghost" size="sm" title="Eliminar registro (solo si nunca ha marcado)" onClick={() => remove(e.id)}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </>
                   )}
                 </TableCell>
               </TableRow>
