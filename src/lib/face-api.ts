@@ -32,7 +32,13 @@ async function ensureLoaded(): Promise<FaceApi> {
         faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
       ]);
       _faceapi = faceapi;
-    })();
+    })().catch((e) => {
+      // Un hipo del CDN (WiFi de tienda) dejaba la promesa rechazada CACHEADA para
+      // siempre: la tablet quedaba sin reconocimiento hasta recargar. Se limpia para
+      // que el siguiente intento vuelva a cargar los modelos.
+      _loading = null;
+      throw e;
+    });
   }
   await _loading;
   return _faceapi!;
@@ -68,21 +74,71 @@ export function isLowEndDevice(): boolean {
   return (typeof mem === "number" && mem <= 3) || (typeof cores === "number" && cores <= 4);
 }
 
+/** Mensaje que distingue el fallo de CARGA (CDN/red) del de NO-HAY-ROSTRO. */
+export const FACE_CDN_ERROR =
+  "No se pudo cargar el reconocimiento facial. Revisa la conexión de la tienda (WiFi/datos) y reintenta en unos segundos.";
+export const FACE_NO_ROSTRO_ERROR =
+  "No se detectó un rostro. Busca mejor luz —evita ventanas o lámparas DETRÁS de la persona—, coloca la cara de frente y que llene el recuadro.";
+
 /**
- * Descriptor (128 floats) de la cara en la imagen. Lanza error si no detecta un
- * rostro o si el motor no pudo cargar. En equipos de gama baja usa un inputSize
- * menor (menos cómputo → menos bloqueo del hilo).
+ * Copia de la imagen con brillo y contraste realzados. Contra la retroiluminación
+ * (luz fuerte de fondo que deja la cara oscura), que es la causa #1 de que el detector
+ * "no vea" un rostro que está clarísimo para el ojo humano.
+ */
+function brightenedCanvas(img: HTMLImageElement): HTMLCanvasElement | null {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h) return null;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.filter = "brightness(1.35) contrast(1.25)";
+  ctx.drawImage(img, 0, 0, w, h);
+  return c;
+}
+
+/**
+ * Descriptor (128 floats) de la cara en la imagen. Lanza FACE_CDN_ERROR si el motor no
+ * pudo cargar, o FACE_NO_ROSTRO_ERROR si de plano no hay rostro tras varios intentos.
+ *
+ * Hace VARIAS pasadas de detección, de la más estricta a la más tolerante, y una final
+ * sobre una versión aclarada de la foto. Así cubre retroiluminación, poca luz y equipos
+ * de gama baja (donde antes un solo intento con umbral estricto fallaba de más).
  */
 export async function computeDescriptorFromDataUrl(dataUrl: string): Promise<number[]> {
-  const faceapi = await ensureLoaded();
+  let faceapi: FaceApi;
+  try {
+    faceapi = await ensureLoaded();
+  } catch {
+    throw new Error(FACE_CDN_ERROR);
+  }
   const img = await loadImage(dataUrl);
-  const inputSize = isLowEndDevice() ? 256 : 416;
-  const det = await faceapi
-    .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold: 0.5 }))
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-  if (!det) throw new Error("No se detectó un rostro. Acomódate de frente a la cámara.");
-  return Array.from(det.descriptor);
+  const low = isLowEndDevice();
+  // De estricto a tolerante. Un umbral menor detecta caras de bajo contraste (contraluz)
+  // a costa de más falsos positivos; como es una foto ya encuadrada de una sola persona,
+  // el riesgo es bajo y el descriptor se compara luego contra la referencia igual.
+  const passes = low
+    ? [{ inputSize: 320, scoreThreshold: 0.5 }, { inputSize: 416, scoreThreshold: 0.3 }, { inputSize: 224, scoreThreshold: 0.2 }]
+    : [{ inputSize: 416, scoreThreshold: 0.5 }, { inputSize: 512, scoreThreshold: 0.3 }, { inputSize: 608, scoreThreshold: 0.2 }];
+
+  const tryDetect = async (input: HTMLImageElement | HTMLCanvasElement, opts: { inputSize: number; scoreThreshold: number }) =>
+    faceapi
+      .detectSingleFace(input, new faceapi.TinyFaceDetectorOptions(opts))
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+  for (const p of passes) {
+    const det = await tryDetect(img, p);
+    if (det) return Array.from(det.descriptor);
+  }
+  // Último recurso: la misma foto aclarada, contra la retroiluminación.
+  const bright = brightenedCanvas(img);
+  if (bright) {
+    const det = await tryDetect(bright, { inputSize: low ? 416 : 608, scoreThreshold: 0.2 });
+    if (det) return Array.from(det.descriptor);
+  }
+  throw new Error(FACE_NO_ROSTRO_ERROR);
 }
 
 /* ───────────────────────── Liveness por parpadeo (anti-foto) ─────────────────────────
