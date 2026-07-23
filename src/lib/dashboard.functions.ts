@@ -4,6 +4,51 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { getScope } from "./admin.functions";
 
+/**
+ * IDs de la(s) tienda(s) de CAPACITACIÓN (la tienda demo). Sus colaboradores y marcajes
+ * son de práctica, así que se EXCLUYEN de los datos generales del dashboard (dotación,
+ * contratados vs presupuesto, presentes, evaluación…) para no distorsionar la realidad.
+ */
+async function trainingStoreIds(): Promise<Set<string>> {
+  const { data: z } = await supabaseAdmin
+    .from("zones").select("id").eq("code", "CAPACITACION").maybeSingle();
+  if (!z) return new Set();
+  const { data: s } = await supabaseAdmin.from("stores").select("id").eq("zone_id", z.id);
+  return new Set((s ?? []).map((x) => x.id as string));
+}
+
+/**
+ * Alcance efectivo de tiendas para las vistas del dashboard: parte del alcance del
+ * usuario (getScope), lo reduce a la tienda/zona seleccionada, y EXCLUYE la tienda demo
+ * —salvo que el usuario la haya elegido a propósito (para mostrarla en la capacitación)—.
+ * Cuando el alcance es "todas", lo convierte en la lista explícita de tiendas activas
+ * sin la demo, para que la exclusión también aplique al Administrador.
+ */
+async function resolveDashboardScope(
+  scope: Awaited<ReturnType<typeof getScope>>,
+  data: { storeId?: string; zoneId?: string },
+): Promise<string[] | "all"> {
+  let effective: string[] | "all" = scope.storeIds;
+  if (data.storeId) {
+    effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
+  } else if (data.zoneId) {
+    const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
+    let ids = (zs ?? []).map((s) => s.id as string);
+    if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
+    effective = ids;
+  }
+  // Elección explícita de tienda o zona → se respeta tal cual (incluye la demo).
+  if (data.storeId || data.zoneId) return effective;
+
+  const demo = await trainingStoreIds();
+  if (!demo.size) return effective;
+  if (effective === "all") {
+    const { data: all } = await supabaseAdmin.from("stores").select("id").eq("active", true);
+    return (all ?? []).map((s) => s.id as string).filter((id) => !demo.has(id));
+  }
+  return effective.filter((id) => !demo.has(id));
+}
+
 /** Returns Monday 00:00 of the week containing `d`. */
 function startOfWeek(d: Date): Date {
   const x = new Date(d);
@@ -93,15 +138,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
     // Alcance efectivo: el del usuario, opcionalmente reducido por tienda o zona seleccionada.
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
     // "Hoy" en hora de Nicaragua (UTC-6), no la del servidor.
     const nowNI = new Date(Date.now() - NI_OFFSET_MS);
     const todayStr = nowNI.toISOString().slice(0, 10);
@@ -702,15 +739,7 @@ export const exportAttendance = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
     // Ventana: con from/to (fechas locales NI) se usa [from 00:00, to+1 00:00);
     // si no, la ventana de los últimos `days` días hasta ahora.
     let fromISO: string;
@@ -1079,15 +1108,7 @@ export const getStaffingReport = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
 
     const dateStr = data.date ?? new Date(Date.now() - NI_OFFSET_MS).toISOString().slice(0, 10);
     const base = new Date(dateStr + "T00:00:00Z");
@@ -1171,15 +1192,7 @@ export const getCoverageReport = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
     const effSet = effective === "all" ? null : new Set(effective);
 
     const since = new Date(Date.now() - data.days * 24 * 3600 * 1000);
@@ -1344,15 +1357,7 @@ export const getStaffingBudgetReport = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
 
     let storeQ = supabaseAdmin.from("stores").select("id, code, name").eq("active", true);
     if (effective !== "all") storeQ = storeQ.in("id", effective.length ? effective : ["00000000-0000-0000-0000-000000000000"]);
@@ -1529,15 +1534,7 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
   )
   .handler(async ({ context, data }) => {
     const scope = await getScope(context.userId);
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
 
     // Semana de evaluación SÁBADO→VIERNES. Corte el sábado de madrugada (04:00 NI), en
     // el hueco entre que cierra el último PM (~6:00) y abre el AM, para que ningún turno
@@ -1739,15 +1736,7 @@ export const getManagerMarks = createServerFn({ method: "POST" })
       return { gerentes: [], zonales: [], verZonales: false, fecha: todayStr };
 
     // Mismo alcance efectivo que el resto del dashboard (zona/tienda seleccionada).
-    let effective: string[] | "all" = scope.storeIds;
-    if (data.storeId) {
-      effective = scope.storeIds === "all" || scope.storeIds.includes(data.storeId) ? [data.storeId] : [];
-    } else if (data.zoneId) {
-      const { data: zs } = await supabaseAdmin.from("stores").select("id").eq("zone_id", data.zoneId);
-      let ids = (zs ?? []).map((s) => s.id as string);
-      if (scope.storeIds !== "all") ids = ids.filter((id) => (scope.storeIds as string[]).includes(id));
-      effective = ids;
-    }
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
 
     const { data: sts } = await supabaseAdmin.from("stores").select("id, code, name, zone_id");
     const storeById = new Map((sts ?? []).map((s) => [s.id as string, s as { id: string; code: string; name: string; zone_id: string | null }]));
