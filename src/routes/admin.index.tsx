@@ -2764,7 +2764,8 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
             <h3 className="font-semibold text-foreground">Marcaje · Gerentes de Zona</h3>
             <Badge variant="outline">{gzs.length}</Badge>
             <p className="w-full text-xs text-muted-foreground">
-              Recorrido de hoy: dónde inició (contra las 8:00), dónde cerró y en cuántas tiendas marcó
+              Recorrido de hoy. Managua: 8:00 de martes a viernes en su primera tienda ·
+              Foráneas: 8:00 los lunes en su tienda base. Los demás días el recorrido varía y no se califica.
             </p>
           </div>
           {gzs.length === 0 ? (
@@ -2788,7 +2789,10 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
                         <div className="font-medium text-foreground">{z.name}</div>
                         <div className="text-xs text-muted-foreground font-mono">{z.code}</div>
                       </TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{z.zona}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {z.zona}
+                        <div className="text-[11px] opacity-75">{z.regla}</div>
+                      </TableCell>
                       <TableCell className="text-sm">
                         {z.inicioHora ? (
                           <>
@@ -2799,9 +2803,17 @@ function ManagerMarksCards({ storeId, zoneId }: { storeId: string; zoneId: strin
                             {z.evaluable && z.tarde && (
                               <div className="text-[11px] text-amber-700">{z.atraso} min tarde</div>
                             )}
+                            {z.fueraDeBase && (
+                              <div className="text-[11px] text-amber-700">no arrancó en su base ({z.baseTienda})</div>
+                            )}
                           </>
-                        ) : (
+                        ) : z.exigible ? (
                           <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">Sin marcar</Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                        {!z.exigible && (
+                          <div className="text-[11px] text-muted-foreground">recorrido variable hoy</div>
                         )}
                       </TableCell>
                       <TableCell className="text-sm">

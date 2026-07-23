@@ -1790,8 +1790,12 @@ export const getManagerMarks = createServerFn({ method: "POST" })
       .order("created_at", { ascending: true })
       .limit(4000);
 
-    const { data: zns } = await supabaseAdmin.from("zones").select("id, name");
-    const zoneById = new Map((zns ?? []).map((z) => [z.id as string, z.name as string]));
+    const { data: zns } = await supabaseAdmin.from("zones").select("id, name, code");
+    const zoneById = new Map(
+      (zns ?? []).map((z) => [z.id as string, { name: z.name as string, code: z.code as string }]),
+    );
+    // Día de la semana en hora de Nicaragua (0=domingo … 6=sábado).
+    const dow = new Date(todayStr + "T00:00:00Z").getUTCDay();
 
     const byEmp = new Map<string, Array<{ type: string; created_at: string; store_id: string }>>();
     for (const r of recs ?? []) {
@@ -1849,14 +1853,30 @@ export const getManagerMarks = createServerFn({ method: "POST" })
         const first = entradas[0];
         const last = salidas[salidas.length - 1];
         const anchor = storeById.get(m.store_id);
-        // El GZ también entra a las 8:00; se mide contra su PRIMER marcaje del día,
-        // que es donde arranca el recorrido.
-        const punt = managerPunctuality(first ? localMinsOf(first.created_at) : null);
+        const zona = anchor?.zone_id ? zoneById.get(anchor.zone_id) : undefined;
+        // La exigencia de las 8:00 NO es todos los días para el GZ:
+        //  - Zonas de Managua: martes a viernes, en su PRIMERA tienda del día.
+        //  - Zonas foráneas: lunes, en su TIENDA BASE. El resto de la semana el
+        //    recorrido varía según a dónde viaje, así que se muestra sin veredicto.
+        const esForanea = (zona?.code ?? "").startsWith("FOR");
+        const exigible = esForanea ? dow === 1 : dow >= 2 && dow <= 5;
+        const regla = esForanea
+          ? "Lunes 8:00 en su tienda base"
+          : "Martes a viernes 8:00 en su primera tienda";
+        const punt = exigible
+          ? managerPunctuality(first ? localMinsOf(first.created_at) : null)
+          : { atraso: null as number | null, tarde: false, evaluable: false };
+        // Solo aplica al lunes foráneo: debía arrancar en su tienda base.
+        const fueraDeBase = esForanea && exigible && !!first && first.store_id !== m.store_id;
         return {
           id: m.id,
           name: m.full_name,
           code: m.employee_code,
-          zona: anchor?.zone_id ? (zoneById.get(anchor.zone_id) ?? "—") : "—",
+          zona: zona?.name ?? "—",
+          baseTienda: anchor?.code ?? "—",
+          exigible,
+          regla,
+          fueraDeBase,
           atraso: punt.atraso,
           tarde: punt.tarde,
           evaluable: punt.evaluable,
@@ -1870,10 +1890,12 @@ export const getManagerMarks = createServerFn({ method: "POST" })
           dentro: !!first && !last,
         };
       })
+      // Primero lo que hay que atender: día exigible sin marcar, luego atrasados,
+      // luego los días de recorrido variable (que no se juzgan).
       .sort((a, b) => {
-        if (!a.inicioHora && b.inicioHora) return -1;
-        if (a.inicioHora && !b.inicioHora) return 1;
-        return b.paradas - a.paradas;
+        const rank = (z: { exigible: boolean; inicioHora: string | null; tarde: boolean }) =>
+          z.exigible && !z.inicioHora ? 0 : z.exigible && z.tarde ? 1 : z.exigible ? 2 : 3;
+        return rank(a) - rank(b) || (b.atraso ?? -9999) - (a.atraso ?? -9999) || b.paradas - a.paradas;
       });
 
     return { gerentes, zonales, verZonales: isSuper, fecha: todayStr };
