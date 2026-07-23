@@ -95,6 +95,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
+      // Refuerza el translate="no" del <html>: el traductor de Chrome reescribe los
+      // nodos de texto y hace fallar el renderizado de React.
+      { name: "google", content: "notranslate" },
       { title: "AM/PM Centroamérica - Marcaje" },
       { name: "description", content: "Sistema de marcaje y control de asistencia para tiendas AM/PM Centroamérica." },
       { name: "author", content: "AM/PM Centroamérica" },
@@ -123,7 +126,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    // lang="es": la app está en español. Estaba declarada como inglés, así que Chrome
+    // detectaba "página en otro idioma" y ofrecía traducirla; al traducir reemplaza los
+    // nodos de texto por otros suyos y React truena al intentar quitar los originales
+    // ("Error al ejecutar 'removeChild'"), tumbando la sección completa.
+    // translate="no" evita además que la traduzcan a propósito y rompan la app.
+    <html lang="es" translate="no">
       <head>
         <HeadContent />
       </head>

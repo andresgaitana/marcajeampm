@@ -108,15 +108,30 @@ import { toast } from "sonner";
 /** Error boundary del panel: si un panel lanza una excepción, muestra un aviso con
  * botón de reintentar (y el mensaje del error) en vez de tumbar toda la página. */
 function AdminSectionError({ error, reset }: { error: Error; reset: () => void }) {
+  // El traductor del navegador reemplaza los nodos de texto y React falla al quitarlos.
+  // Ahí "Reintentar" no sirve (el DOM ya quedó mezclado): hay que recargar.
+  const traductor = /removeChild|insertBefore|NotFoundError|not a child of this node/i.test(
+    String(error?.message ?? ""),
+  );
   return (
     <div className="max-w-lg mx-auto text-center py-16 px-4">
       <AlertTriangle className="h-10 w-10 text-amber-600 mx-auto mb-3" />
       <h2 className="text-lg font-bold text-foreground">No se pudo cargar esta sección</h2>
       <p className="text-sm text-muted-foreground mt-1">
-        Ocurrió un error al mostrar los datos. Reintenta; si persiste, recarga la página completa.
+        {traductor
+          ? "El traductor del navegador está interfiriendo con la página. Recárgala y, si Chrome ofrece traducirla, elige «No traducir»."
+          : "Ocurrió un error al mostrar los datos. Reintenta; si persiste, recarga la página completa."}
       </p>
       <p className="text-xs text-muted-foreground/70 mt-3 font-mono break-words">{error?.message}</p>
-      <Button variant="outline" className="mt-4" onClick={() => reset()}>Reintentar</Button>
+      <div className="mt-4 flex gap-2 justify-center">
+        {!traductor && <Button variant="outline" onClick={() => reset()}>Reintentar</Button>}
+        <Button
+          className="bg-accent text-accent-foreground hover:bg-accent/90"
+          onClick={() => window.location.reload()}
+        >
+          Recargar página
+        </Button>
+      </div>
     </div>
   );
 }
