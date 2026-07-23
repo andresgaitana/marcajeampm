@@ -542,11 +542,18 @@ export const deleteEmployee = createServerFn({ method: "POST" })
     // llevaría TODOS sus marcajes y cambiaría los números de meses ya cerrados.
     // Por eso el borrado real queda solo para el registro creado por error, sin
     // historial; para quien dejó de laborar existe la baja lógica.
-    const { count } = await supabaseAdmin
+    // Si no se pudo contar, se ABORTA. Un candado sobre una operación irreversible
+    // debe fallar cerrado: ante un error de red, `count` viene null y `count ?? 0`
+    // lo haría pasar por "sin marcajes", borrando el historial que se quiere proteger.
+    const { count, error: countErr } = await supabaseAdmin
       .from("attendance_records")
       .select("id", { count: "exact", head: true })
       .eq("employee_id", data.id);
-    if ((count ?? 0) > 0)
+    if (countErr || count === null)
+      throw new Error(
+        "No se pudo verificar si este colaborador tiene marcajes, así que no se eliminó nada. Reintenta en un momento.",
+      );
+    if (count > 0)
       throw new Error(
         `No se puede eliminar: ${current.full_name} tiene ${count} marcaje(s) registrados y se perdería su historial. Usa «Dar de baja» para sacarlo de la tienda conservando sus registros.`,
       );
