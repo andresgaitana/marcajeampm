@@ -83,6 +83,26 @@ import {
   ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2, Printer, UserMinus, UserCheck,
 } from "lucide-react";
 import { normalizeEmployeeCode, CODE_HELP } from "@/lib/employee-code";
+
+/**
+ * Mensaje de error presentable para el GT. La validación del servidor (zod)
+ * devuelve un volcado JSON con la lista de problemas; mostrarlo crudo en un toast
+ * era ilegible. Extraemos el primer mensaje real.
+ */
+function errorMsg(e: unknown, fallback: string): string {
+  const raw = e instanceof Error ? e.message.trim() : "";
+  if (!raw) return fallback;
+  if (raw.startsWith("[") || raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw);
+      const first = Array.isArray(parsed) ? parsed[0] : parsed;
+      return typeof first?.message === "string" ? first.message : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return raw;
+}
 import { toast } from "sonner";
 
 /** Error boundary del panel: si un panel lanza una excepción, muestra un aviso con
@@ -486,6 +506,7 @@ function EmployeesPanel() {
     face_descriptor: null as number[] | null,
   });
   const [showRefCapture, setShowRefCapture] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (editing) {
@@ -525,6 +546,8 @@ function EmployeesPanel() {
       toast.error(`Escribe el código del colaborador. ${CODE_HELP}`);
       return;
     }
+    if (saving) return; // evita que un doble clic cree al colaborador dos veces
+    setSaving(true);
     try {
       if (editing) {
         await updateFn({
@@ -570,7 +593,9 @@ function EmployeesPanel() {
       setEditing(null);
       qc.invalidateQueries({ queryKey: ["employees"] });
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Error al guardar");
+      toast.error(errorMsg(e, "No se pudo guardar el colaborador"));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -583,7 +608,7 @@ function EmployeesPanel() {
       toast.success("Registro eliminado");
       qc.invalidateQueries({ queryKey: ["employees"] });
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Error al eliminar");
+      toast.error(errorMsg(e, "No se pudo eliminar"));
     }
   };
 
@@ -599,7 +624,7 @@ function EmployeesPanel() {
       toast.success(esBaja ? `${e.full_name} quedó dado de baja` : `${e.full_name} fue reactivado`);
       qc.invalidateQueries({ queryKey: ["employees"] });
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Error al actualizar");
+      toast.error(errorMsg(err, "No se pudo actualizar"));
     }
   };
 
@@ -789,9 +814,9 @@ function EmployeesPanel() {
               </label>
             </div>
             <DialogFooter className="shrink-0 border-t border-border pt-3">
-              <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
-              <Button onClick={save} className="bg-accent text-accent-foreground hover:bg-accent/90">
-                Guardar
+              <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancelar</Button>
+              <Button onClick={save} disabled={saving} className="bg-accent text-accent-foreground hover:bg-accent/90">
+                {saving ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Guardando…</> : "Guardar"}
               </Button>
             </DialogFooter>
           </DialogContent>

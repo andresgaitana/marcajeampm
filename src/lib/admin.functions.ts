@@ -427,6 +427,23 @@ export const updateEmployee = createServerFn({ method: "POST" })
       throw new Error("Como Gerente de Tienda solo puedes cambiar el código de tus Agentes.");
     if (data.employee_code !== undefined && data.employee_code !== current.employee_code)
       await assertCodeAvailable(data.employee_code, scope, data.id);
+    // Jerarquía: el GT administra a sus Agentes. Sobre un Gerente puede corregir
+    // datos inofensivos (nombre, cédula, foto de referencia — así puede enrolar la
+    // suya), pero no cambiarle rol, tienda, PIN ni darlo de baja: cambiarle el PIN
+    // le permitiría marcar como su jefe, y desactivarlo dejaría la tienda sin
+    // supervisión. Esto ya se exigía en crear/eliminar/restablecer PIN; updateEmployee
+    // era la única puerta que quedaba abierta.
+    if (isOnlyStoreAdmin && !AGENT_ROLES.includes(current.role)) {
+      const sensibles: string[] = [];
+      if (data.role !== undefined && data.role !== current.role) sensibles.push("el rol");
+      if (data.store_id !== undefined && data.store_id !== current.store_id) sensibles.push("la tienda");
+      if (data.active !== undefined && data.active !== current.active) sensibles.push("el estado");
+      if (data.pin !== undefined) sensibles.push("el PIN");
+      if (sensibles.length)
+        throw new Error(
+          `Como Gerente de Tienda no puedes cambiar ${sensibles.join(", ")} de un Gerente. Solicítalo a tu Gerente de Zona.`,
+        );
+    }
     const patch: {
       employee_code?: string;
       deactivated_at?: string | null;
@@ -534,6 +551,13 @@ export const deleteEmployee = createServerFn({ method: "POST" })
         `No se puede eliminar: ${current.full_name} tiene ${count} marcaje(s) registrados y se perdería su historial. Usa «Dar de baja» para sacarlo de la tienda conservando sus registros.`,
       );
     const { error } = await supabaseAdmin.from("employees").delete().eq("id", data.id);
+    // attendance_records.face_override_by apunta a employees SIN cascada: si esta
+    // persona autorizó el marcaje de otro cuando falló el reconocimiento facial,
+    // la base bloquea el borrado. Traducimos el error técnico.
+    if (error && /foreign key/i.test(error.message))
+      throw new Error(
+        `No se puede eliminar a ${current.full_name} porque autorizó marcajes de otros colaboradores. Usa «Dar de baja» para conservar esos registros.`,
+      );
     if (error) throw new Error(error.message);
     return { ok: true };
   });

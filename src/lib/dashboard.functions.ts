@@ -1446,6 +1446,22 @@ export const getScheduleAdherence = createServerFn({ method: "POST" })
     const missing = [...new Set(shifts.map((s) => s.employee_id))].filter((id) => !nameById.has(id));
     if (missing.length) { const { data: emps } = await supabaseAdmin.from("employees").select("id, full_name").in("id", missing); for (const e of emps ?? []) nameById.set(e.id as string, e.full_name as string); }
 
+    // Bajas a mitad de semana: el horario ya aprobado conserva los turnos de quien
+    // dejó de laborar. Sus días ANTERIORES a la baja sí cuentan (los trabajó), pero
+    // los posteriores no son ausencias de la tienda: ya no era colaborador. Sin
+    // esto, dar de baja a alguien el miércoles hundía la adherencia de la semana.
+    const planIds = [...new Set(shifts.map((s) => s.employee_id))];
+    const bajaDayIdx = new Map<string, number>();
+    if (planIds.length) {
+      const { data: bajas } = await supabaseAdmin
+        .from("employees").select("id, deactivated_at")
+        .in("id", planIds).eq("active", false).not("deactivated_at", "is", null);
+      for (const b of bajas ?? []) {
+        const { date } = managuaParts(b.deactivated_at as string);
+        bajaDayIdx.set(b.id as string, daysBetweenIso(data.weekStart, date));
+      }
+    }
+
     // Marcaje real: (emp|díaIdx) → primera entrada del día (min locales).
     const actual = new Map<string, number>();
     for (const r of recs ?? []) {
@@ -1458,7 +1474,13 @@ export const getScheduleAdherence = createServerFn({ method: "POST" })
 
     // Plan: (emp|díaIdx) → turno planeado (prioriza CAJA sobre APOYO).
     const planned = new Map<string, { shift_key: string; role: string }>();
-    for (const s of shifts) { const key = `${s.employee_id}|${s.day_index}`; if (!planned.has(key) || s.role !== "APOYO") planned.set(key, { shift_key: s.shift_key, role: s.role }); }
+    for (const s of shifts) {
+      // Turno planeado DESPUÉS de que el colaborador fue dado de baja: se descarta.
+      const baja = bajaDayIdx.get(s.employee_id);
+      if (baja !== undefined && s.day_index > baja) continue;
+      const key = `${s.employee_id}|${s.day_index}`;
+      if (!planned.has(key) || s.role !== "APOYO") planned.set(key, { shift_key: s.shift_key, role: s.role });
+    }
 
     type Emp = { id: string; name: string; planned: number; present: number; absent: number; late: number; extra: number };
     const byEmp = new Map<string, Emp>();
