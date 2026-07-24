@@ -484,7 +484,10 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
         const dayMid = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
         const endAbsMs = dayMid + (end + (nextDay ? 1440 : 0)) * 60000 + NI_OFFSET_MS;
         const areaLbl = area === "mbk" ? "MBK" : "Productos";
-        const cierre = `${areaLbl} ${turno} · ${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`;
+        // Etiqueta de la hora de cierre en formato de reloj (mod 24): con una tienda de
+        // entrada tardía el fin del MBK PM puede dar 1440 min y mostrarse como "24:00".
+        const endClock = ((end % 1440) + 1440) % 1440;
+        const cierre = `${areaLbl} ${turno} · ${String(Math.floor(endClock / 60)).padStart(2, "0")}:${String(endClock % 60).padStart(2, "0")}`;
         if (salida) {
           const extra = Math.round((new Date(salida.created_at).getTime() - endAbsMs) / 60000);
           if (extra > OT_TOL) {
@@ -1349,18 +1352,29 @@ export const getStoreEntryHours = createServerFn({ method: "POST" })
       if (m < 240 || m >= 720) continue; // solo la franja de entrada AM (4:00–12:00)
       const arr = amMins.get(r.store_id as string) ?? []; arr.push(m); amMins.set(r.store_id as string, arr);
     }
-    const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null; };
+    // Mediana insesgada (promedio de los dos centrales si n es par).
+    const median = (a: number[]) => {
+      if (!a.length) return null;
+      const s = [...a].sort((x, y) => x - y);
+      const mid = Math.floor(s.length / 2);
+      return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+    };
+    // Sin un mínimo de muestras la "sugerencia" es ruido (1–3 marcajes atípicos darían
+    // una hora absurda que el GT confirmaría de un clic). Se exige al menos una semana
+    // de datos antes de sugerir; si no, se pide configurarla a mano.
+    const MIN_SAMPLES = 8;
 
     const rows = (stores ?? []).map((s) => {
       const configured = current.get(s.id as string) ?? null;
-      const sugMin = median(amMins.get(s.id as string) ?? []);
+      const samples = amMins.get(s.id as string) ?? [];
+      const sugMin = samples.length >= MIN_SAMPLES ? median(samples) : null;
       // Se sugiere al cuarto de hora más cercano para una hora "redonda".
       const sug = sugMin === null ? null : Math.round(sugMin / 15) * 15;
       return {
         storeId: s.id as string, code: s.code as string, name: s.name as string,
         configuredMin: configured, configured: configured === null ? null : fmtHHMM(configured),
         suggestedMin: sug, suggested: sug === null ? null : fmtHHMM(sug),
-        samples: (amMins.get(s.id as string) ?? []).length,
+        samples: samples.length,
       };
     });
     return { rows, canEditFree: !isStoreOnly };
@@ -1375,7 +1389,6 @@ export const setStoreEntryHour = createServerFn({ method: "POST" })
     z.object({
       storeId: z.string().uuid(),
       amEntryMin: z.number().int().min(240).max(720), // 4:00–12:00
-      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       note: z.string().max(200).optional(),
     }).parse(i),
   )
@@ -1385,16 +1398,20 @@ export const setStoreEntryHour = createServerFn({ method: "POST" })
       throw new Error("No puedes configurar la hora de esta tienda.");
     const isStoreOnly = scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
 
-    const { count } = await supabaseAdmin
+    const { count, error: cntErr } = await supabaseAdmin
       .from("store_shift_hours").select("id", { count: "exact", head: true }).eq("store_id", data.storeId);
-    const yaConfigurada = (count ?? 0) > 0;
+    if (cntErr || count === null)
+      throw new Error("No se pudo verificar la configuración actual. Reintenta en un momento.");
+    const yaConfigurada = count > 0;
     if (isStoreOnly && yaConfigurada)
       throw new Error("La hora ya fue configurada. Para cambiarla pídeselo a tu Gerente de Zona.");
 
-    // Vigencia: por defecto desde HOY (no recalcula el pasado). El GT en su bootstrap
-    // puede querer que aplique desde el inicio; lo dejamos desde hoy salvo que se indique.
+    // Vigencia SIEMPRE desde HOY hacia adelante: la garantía del cambio es que NO
+    // recalcula meses cerrados. Aceptar un effective_from retroactivo dejaría a un GT
+    // (que es la parte evaluada) reescribir su propia puntualidad histórica: por eso
+    // no se permite backdating desde la app, ni siquiera en el bootstrap.
     const today = new Date(Date.now() - NI_OFFSET_MS).toISOString().slice(0, 10);
-    const effective_from = data.effectiveFrom ?? today;
+    const effective_from = today;
     const { error } = await supabaseAdmin.from("store_shift_hours").upsert(
       { store_id: data.storeId, am_entry_min: data.amEntryMin, effective_from, note: data.note ?? null, created_by: context.userId },
       { onConflict: "store_id,effective_from" },
