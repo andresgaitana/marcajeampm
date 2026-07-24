@@ -44,7 +44,7 @@ import {
   deleteEmployeeCredential,
 } from "@/lib/webauthn.functions";
 import { startRegistration } from "@simplewebauthn/browser";
-import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence, getStaffingBudgetReport, getManagerMarks } from "@/lib/dashboard.functions";
+import { getDashboardMetrics, getEmployeeSummary, getEmployeeWeeklyMarks, getWeeklySchedule, getSchedulePrint, exportAttendance, getStaffingReport, getAttendanceKpis, getCoverageReport, getScheduleAdherence, getStaffingBudgetReport, getManagerMarks, getStoreEntryHours, setStoreEntryHour } from "@/lib/dashboard.functions";
 import { getScheduleContext, generateSchedule, saveSchedule, setEmployeeScheduleAttrs } from "@/lib/schedule.functions";
 import { SHIFT_KEYS as SCH_SHIFT_KEYS, SHIFT_DEF as SCH_SHIFT_DEF, DAYS as SCH_DAYS, validate as schedValidate, type Coverage as SchedCoverage, type SchedPerson, type Schedule as SchedGrid, type Alert as SchedAlert, type ShiftKey as SchedShiftKey } from "@/lib/schedule-engine";
 import { SelfieCapture } from "@/components/SelfieCapture";
@@ -80,7 +80,7 @@ import {
   Plus, Trash2, Pencil, Download, LogIn, LogOut, Users, History,
   LayoutDashboard, Store as StoreIcon, AlertTriangle, Sparkles, Fingerprint, MapPin,
   Map as MapZoneIcon, ShieldCheck, Calendar as CalendarIcon, ChevronRight, Camera, KeyRound, ClipboardList,
-  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2, Printer, UserMinus, UserCheck,
+  ClipboardCheck, ArrowLeftRight, CalendarPlus, Loader2, Printer, UserMinus, UserCheck, Clock,
 } from "lucide-react";
 import { normalizeEmployeeCode, CODE_HELP } from "@/lib/employee-code";
 
@@ -2043,6 +2043,8 @@ function DashboardPanel() {
         <OvertimeCard rows={m.overtime_today} />
       </div>
 
+      <StoreEntryHoursCard storeId={filter.storeId} zoneId={filter.zoneId} />
+
       {/* Marcaje de gerentes: el GZ ve a sus GT; la Administración ve además el
           recorrido de cada GZ. El GT no lo ve. */}
       {(isZone || isSuper) && <ManagerMarksCards storeId={filter.storeId} zoneId={filter.zoneId} />}
@@ -3836,6 +3838,129 @@ function EnrollFaceDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Hora de entrada del equipo por tienda (agentes). El GT la pone UNA VEZ, precargada
+ * con la hora que su gente ya marca de verdad (no la teclea a ciegas). Después queda
+ * bloqueada para el GT; el GZ/Operaciones puede cambiarla. Solo afecta a los agentes;
+ * GT y GZ tienen su propia regla (8:00).
+ */
+function StoreEntryHoursCard({ storeId, zoneId }: { storeId: string; zoneId: string }) {
+  const getFn = useServerFn(getStoreEntryHours);
+  const setFn = useServerFn(setStoreEntryHour);
+  const qc = useQueryClient();
+  const args: { storeId?: string; zoneId?: string } = {};
+  if (storeId !== "all") args.storeId = storeId;
+  else if (zoneId !== "all") args.zoneId = zoneId;
+  const { data } = useQuery({
+    queryKey: ["storeEntryHours", zoneId, storeId],
+    queryFn: () => getFn({ data: args }),
+    refetchInterval: false,
+  });
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  if (!data) return null;
+  const rows = data.rows ?? [];
+  if (!rows.length) return null;
+  const pendientes = rows.filter((r) => !r.configured).length;
+
+  const save = async (r: (typeof rows)[number]) => {
+    const hhmm = draft[r.storeId] ?? r.configured ?? r.suggested ?? "06:00";
+    const [h, m] = hhmm.split(":").map(Number);
+    const amEntryMin = h * 60 + (m || 0);
+    if (!(amEntryMin >= 240 && amEntryMin <= 720)) {
+      toast.error("La hora de entrada debe estar entre 04:00 y 12:00.");
+      return;
+    }
+    setSavingId(r.storeId);
+    try {
+      await setFn({ data: { storeId: r.storeId, amEntryMin } });
+      toast.success(`Hora de entrada de ${r.code} guardada: ${hhmm}. Aplica desde hoy; los días anteriores no cambian.`);
+      qc.invalidateQueries({ queryKey: ["storeEntryHours"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (e) {
+      toast.error(errorMsg(e, "No se pudo guardar la hora"));
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <div className="bg-card rounded-2xl border border-border overflow-hidden">
+      <div className="p-4 border-b border-border flex items-center gap-2 flex-wrap">
+        <Clock className="h-4 w-4 text-accent" />
+        <h3 className="font-semibold text-foreground">Hora de entrada del equipo</h3>
+        {pendientes > 0 && (
+          <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">{pendientes} sin configurar</Badge>
+        )}
+        <p className="w-full text-xs text-muted-foreground">
+          A qué hora entra el turno de la mañana en tu tienda. Solo aplica a los agentes (Productos/MBK); el turno de la noche se corre solo.
+          {data.canEditFree ? "" : " Se configura una vez; para cambiarla pídeselo a tu Gerente de Zona."}
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-secondary/50">
+              <TableHead>Tienda</TableHead>
+              <TableHead>Hora actual</TableHead>
+              <TableHead>Tu equipo entra ~</TableHead>
+              <TableHead className="text-right">Configurar</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => {
+              const locked = !data.canEditFree && !!r.configured; // GT ya la fijó
+              return (
+                <TableRow key={r.storeId}>
+                  <TableCell>
+                    <div className="font-mono text-foreground">{r.code}</div>
+                    <div className="text-xs text-muted-foreground">{r.name}</div>
+                  </TableCell>
+                  <TableCell>
+                    {r.configured ? (
+                      <span className="font-mono">{r.configured}</span>
+                    ) : (
+                      <Badge variant="outline" className="border-amber-500 text-amber-700">Sin configurar (6:00 por defecto)</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {r.suggested ? (
+                      <>
+                        <span className="font-mono">{r.suggested}</span>
+                        <span className="text-xs text-muted-foreground"> · {r.samples} marcajes</span>
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">sin datos aún</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {locked ? (
+                      <span className="text-xs text-muted-foreground">bloqueada</span>
+                    ) : (
+                      <div className="flex items-center gap-1.5 justify-end">
+                        <input
+                          type="time"
+                          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                          defaultValue={r.configured ?? r.suggested ?? "06:00"}
+                          onChange={(e) => setDraft((d) => ({ ...d, [r.storeId]: e.target.value }))}
+                        />
+                        <Button size="sm" disabled={savingId === r.storeId} onClick={() => save(r)}
+                          className="bg-accent text-accent-foreground hover:bg-accent/90">
+                          {savingId === r.storeId ? "…" : r.configured ? "Cambiar" : "Guardar"}
+                        </Button>
+                      </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   );
 }
 

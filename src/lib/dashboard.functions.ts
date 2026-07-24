@@ -163,6 +163,11 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
     const { data: storesData } = await storesQ;
     const stores = storesData ?? [];
 
+    // Hora de entrada AM por tienda (default 6:00). Se usa para la puntualidad y el
+    // cierre de turno, así las tiendas que entran más tarde no salen "tarde" en falso.
+    const amEntryByStore = await loadStoreAmEntry(stores.map((s) => s.id as string), todayStr);
+    const amEntryOf = (storeId: string) => amEntryByStore.get(storeId) ?? DEFAULT_AM_ENTRY;
+
     // Today metrics
     const todayRecs = records.filter((r) => new Date(r.created_at).getTime() >= startOfTodayMs);
     const todayEntries = todayRecs.filter((r) => r.type === "entrada").length;
@@ -424,6 +429,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
 
     // ───────── Marcaron tarde hoy (agentes) ─────────
     // Por (empleado, turno) la entrada más temprana; tarde si supera inicio + tolerancia.
+    // Se mide contra la hora de entrada de la TIENDA DONDE MARCÓ (donde está su turno).
     const lateShift = new Map<string, { id: string; name: string; code: string; area: string; turno: "AM" | "PM"; mins: number; start: number }>();
     for (const r of todayRecs) {
       if (r.type !== "entrada") continue;
@@ -431,7 +437,7 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
       if (!info || (info.role !== "cajero" && info.role !== "agente_mbk")) continue;
       const local = new Date(new Date(r.created_at).getTime() - NI_OFFSET_MS);
       const mins = local.getUTCHours() * 60 + local.getUTCMinutes();
-      const { start, turno } = expectedStart(info.role, mins);
+      const { start, turno } = expectedStart(info.role, mins, amEntryOf(r.store_id));
       const key = `${r.employee_id}|${turno}`;
       const cur = lateShift.get(key);
       if (!cur || mins < cur.mins) {
@@ -472,8 +478,9 @@ export const getDashboardMetrics = createServerFn({ method: "POST" })
         const local = new Date(new Date(entrada.created_at).getTime() - NI_OFFSET_MS);
         const mins = local.getUTCHours() * 60 + local.getUTCMinutes();
         const area = effectiveArea(entrada.area, info.role) === "mbk" ? "mbk" : "productos";
-        const { turno } = expectedStart(info.role, mins);
-        const { end, nextDay } = expectedEnd(area, turno);
+        const amEntry = amEntryOf(entrada.store_id);
+        const { turno } = expectedStart(info.role, mins, amEntry);
+        const { end, nextDay } = expectedEnd(area, turno, amEntry);
         const dayMid = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
         const endAbsMs = dayMid + (end + (nextDay ? 1440 : 0)) * 60000 + NI_OFFSET_MS;
         const areaLbl = area === "mbk" ? "MBK" : "Productos";
@@ -1302,6 +1309,100 @@ export const setStoreStaffing = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+// ─────────────────── Hora de entrada del equipo por tienda (agentes) ───────────────────
+const fmtHHMM = (min: number) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+
+/** Hora de entrada configurada por tienda (en alcance) + la hora sugerida por el
+ * historial real de marcajes, para que el GT confirme en vez de teclear a ciegas. */
+export const getStoreEntryHours = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) => z.object({ storeId: z.string().uuid().optional(), zoneId: z.string().uuid().optional() }).parse(i ?? {}))
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    const isStoreOnly = scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
+    let effective: string[] | "all" = await resolveDashboardScope(scope, data);
+
+    let sq = supabaseAdmin.from("stores").select("id, code, name").eq("active", true).order("code");
+    if (effective !== "all") sq = sq.in("id", effective.length ? effective : ["00000000-0000-0000-0000-000000000000"]);
+    const { data: stores } = await sq;
+    const storeIds = (stores ?? []).map((s) => s.id as string);
+    if (!storeIds.length) return { rows: [], canEditFree: !isStoreOnly };
+
+    const today = new Date(Date.now() - NI_OFFSET_MS).toISOString().slice(0, 10);
+    const [current, { data: recs }] = await Promise.all([
+      loadStoreAmEntry(storeIds, today),
+      supabaseAdmin
+        .from("attendance_records")
+        .select("store_id, created_at, employee:employees!employee_id(role)")
+        .eq("type", "entrada").in("store_id", storeIds)
+        .gte("created_at", new Date(Date.now() - 28 * 86400000).toISOString())
+        .limit(20000),
+    ]);
+    // Mediana de la entrada AM real (agentes) de las últimas 4 semanas, por tienda.
+    const amMins = new Map<string, number[]>();
+    for (const r of recs ?? []) {
+      const emp = Array.isArray(r.employee) ? r.employee[0] : r.employee;
+      const role = emp?.role as string | undefined;
+      if (role !== "cajero" && role !== "agente_mbk") continue;
+      const local = new Date(new Date(r.created_at as string).getTime() - NI_OFFSET_MS);
+      const m = local.getUTCHours() * 60 + local.getUTCMinutes();
+      if (m < 240 || m >= 720) continue; // solo la franja de entrada AM (4:00–12:00)
+      const arr = amMins.get(r.store_id as string) ?? []; arr.push(m); amMins.set(r.store_id as string, arr);
+    }
+    const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null; };
+
+    const rows = (stores ?? []).map((s) => {
+      const configured = current.get(s.id as string) ?? null;
+      const sugMin = median(amMins.get(s.id as string) ?? []);
+      // Se sugiere al cuarto de hora más cercano para una hora "redonda".
+      const sug = sugMin === null ? null : Math.round(sugMin / 15) * 15;
+      return {
+        storeId: s.id as string, code: s.code as string, name: s.name as string,
+        configuredMin: configured, configured: configured === null ? null : fmtHHMM(configured),
+        suggestedMin: sug, suggested: sug === null ? null : fmtHHMM(sug),
+        samples: (amMins.get(s.id as string) ?? []).length,
+      };
+    });
+    return { rows, canEditFree: !isStoreOnly };
+  });
+
+/** Fija la hora de entrada AM de una tienda (versión con fecha de vigencia).
+ *  - GT: solo puede fijarla la PRIMERA vez (bootstrap). Luego queda bloqueado.
+ *  - GZ / Operaciones / Admin: pueden cambiarla siempre (nueva versión). */
+export const setStoreEntryHour = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((i) =>
+    z.object({
+      storeId: z.string().uuid(),
+      amEntryMin: z.number().int().min(240).max(720), // 4:00–12:00
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(200).optional(),
+    }).parse(i),
+  )
+  .handler(async ({ context, data }) => {
+    const scope = await getScope(context.userId);
+    if (scope.storeIds !== "all" && !scope.storeIds.includes(data.storeId))
+      throw new Error("No puedes configurar la hora de esta tienda.");
+    const isStoreOnly = scope.isStoreAdmin && !scope.isAdmin && !scope.isOperations && !scope.isZoneAdmin;
+
+    const { count } = await supabaseAdmin
+      .from("store_shift_hours").select("id", { count: "exact", head: true }).eq("store_id", data.storeId);
+    const yaConfigurada = (count ?? 0) > 0;
+    if (isStoreOnly && yaConfigurada)
+      throw new Error("La hora ya fue configurada. Para cambiarla pídeselo a tu Gerente de Zona.");
+
+    // Vigencia: por defecto desde HOY (no recalcula el pasado). El GT en su bootstrap
+    // puede querer que aplique desde el inicio; lo dejamos desde hoy salvo que se indique.
+    const today = new Date(Date.now() - NI_OFFSET_MS).toISOString().slice(0, 10);
+    const effective_from = data.effectiveFrom ?? today;
+    const { error } = await supabaseAdmin.from("store_shift_hours").upsert(
+      { store_id: data.storeId, am_entry_min: data.amEntryMin, effective_from, note: data.note ?? null, created_by: context.userId },
+      { onConflict: "store_id,effective_from" },
+    );
+    if (error) throw new Error(error.message);
+    return { ok: true as const, amEntry: fmtHHMM(data.amEntryMin), effectiveFrom: effective_from };
+  });
+
 // ───────────────────────── KPI de Asistencia y Puntualidad ─────────────────────────
 // Extrae 2 KPIs por colaborador (caja/MBK) para alimentar la evaluación semanal:
 //  - Puntualidad en turnos  (incidencias de llegada tarde, tolerancia ±5 min)
@@ -1311,21 +1412,51 @@ export const setStoreStaffing = createServerFn({ method: "POST" })
 const LATE_TOLERANCE_MIN = 5;
 const SHIFT_MAX_MS = 14 * 3600 * 1000;
 
-/** Inicio esperado (min desde medianoche) y turno, según rol y hora de entrada. */
-function expectedStart(role: string, mins: number): { start: number; turno: "AM" | "PM" } {
+const DEFAULT_AM_ENTRY = 360; // 6:00 — estándar cuando la tienda no configuró otra hora.
+
+/**
+ * Inicio esperado (min desde medianoche) y turno, según rol y hora de entrada.
+ * `amEntry` = hora de entrada del AM de ESA tienda (default 6:00). Todo se corre por
+ * el desfase respecto a las 6:00: si la tienda entra 7:30, su ventana AM y su PM se
+ * mueven +90 min, sin cambiar la duración del turno. Así las tiendas de acceso difícil
+ * no salen "tarde" en falso. NO aplica a GT/GZ (tienen su propia regla de 8:00).
+ */
+function expectedStart(role: string, mins: number, amEntry: number = DEFAULT_AM_ENTRY): { start: number; turno: "AM" | "PM" } {
+  const d = amEntry - DEFAULT_AM_ENTRY;
   if (role === "agente_mbk") {
-    // MBK: AM 6:00 (entradas 4:00–11:00) / PM 14:00 (resto)
-    return mins >= 240 && mins < 660 ? { start: 360, turno: "AM" } : { start: 840, turno: "PM" };
+    // MBK: AM (entradas 4:00–11:00) / PM 14:00 (resto), corridas por d.
+    return mins >= 240 + d && mins < 660 + d ? { start: 360 + d, turno: "AM" } : { start: 840 + d, turno: "PM" };
   }
-  // Productos (cajero): AM 6:00 (entradas 4:00–16:00) / PM 18:00 (resto)
-  return mins >= 240 && mins < 960 ? { start: 360, turno: "AM" } : { start: 1080, turno: "PM" };
+  // Productos (cajero): AM (entradas 4:00–16:00) / PM 18:00 (resto), corridas por d.
+  return mins >= 240 + d && mins < 960 + d ? { start: 360 + d, turno: "AM" } : { start: 1080 + d, turno: "PM" };
+}
+
+/**
+ * Mapa store_id → hora AM de entrada (min) vigente en `onDate`. Default 6:00 para las
+ * tiendas que no configuraron. Se elige la versión de mayor effective_from <= onDate,
+ * para que cambiar la hora no recalcule fechas pasadas.
+ */
+async function loadStoreAmEntry(storeIds: string[], onDate: string): Promise<Map<string, number>> {
+  const m = new Map<string, number>();
+  if (!storeIds.length) return m;
+  const { data } = await supabaseAdmin
+    .from("store_shift_hours")
+    .select("store_id, am_entry_min, effective_from")
+    .in("store_id", storeIds)
+    .lte("effective_from", onDate)
+    .order("effective_from", { ascending: true });
+  // asc: la última fila por tienda (mayor effective_from <= onDate) gana.
+  for (const r of data ?? []) m.set(r.store_id as string, r.am_entry_min as number);
+  return m;
 }
 
 /** Fin esperado del turno (min desde medianoche del día operativo) por área y turno.
- * Productos AM 6→18, PM 18→6 (día siguiente); MBK AM 6→14, PM 14→22. */
-function expectedEnd(area: "productos" | "mbk", turno: "AM" | "PM"): { end: number; nextDay: boolean } {
-  if (area === "mbk") return turno === "AM" ? { end: 14 * 60, nextDay: false } : { end: 22 * 60, nextDay: false };
-  return turno === "AM" ? { end: 18 * 60, nextDay: false } : { end: 6 * 60, nextDay: true };
+ * Con hora estándar: Productos AM 6→18, PM 18→6 (día siguiente); MBK AM 6→14, PM 14→22.
+ * Se corre por el desfase de la hora de entrada de la tienda (amEntry). */
+function expectedEnd(area: "productos" | "mbk", turno: "AM" | "PM", amEntry: number = DEFAULT_AM_ENTRY): { end: number; nextDay: boolean } {
+  const d = amEntry - DEFAULT_AM_ENTRY;
+  if (area === "mbk") return turno === "AM" ? { end: 14 * 60 + d, nextDay: false } : { end: 22 * 60 + d, nextDay: false };
+  return turno === "AM" ? { end: 18 * 60 + d, nextDay: false } : { end: 6 * 60 + d, nextDay: true };
 }
 
 /** # incidencias de puntualidad → nota 1-5 (rúbrica de evaluación). */
@@ -1433,6 +1564,10 @@ export const getScheduleAdherence = createServerFn({ method: "POST" })
       .eq("store_id", data.storeId).eq("week_start", data.weekStart).maybeSingle();
     if (!sched) return { found: false as const, weekStart: data.weekStart };
 
+    // Desfase de la hora de entrada de ESTA tienda, vigente en la semana del plan: la
+    // tardanza se mide contra la hora real de la tienda, no contra las 6:00 fijas.
+    const amDelta = ((await loadStoreAmEntry([data.storeId], data.weekStart)).get(data.storeId) ?? DEFAULT_AM_ENTRY) - DEFAULT_AM_ENTRY;
+
     const shifts = (sched.schedule_shifts ?? []) as Array<{ employee_id: string; day_index: number; shift_key: string; role: string }>;
 
     // Ventana de la semana (lunes 00:00 NI → +7 días) y entradas marcadas EN esta tienda.
@@ -1497,10 +1632,11 @@ export const getScheduleAdherence = createServerFn({ method: "POST" })
     for (const [key, pl] of planned) {
       const [id, diStr] = key.split("|"); const di = +diStr; const e = emp(id); e.planned++;
       const def = PLAN_SHIFT[pl.shift_key];
+      const start = def ? def.start + amDelta : 0; // hora esperada corrida por la tienda
       if (actual.has(key)) {
         e.present++;
-        const m = actual.get(key)!; const lateBy = def ? m - def.start : 0;
-        if (def && lateBy > LATE_TOLERANCE_MIN) { e.late++; lates.push({ name: e.name, day: ADH_DAYS[di], shift: def.label, enteredAt: fmtMin(m), expected: fmtMin(def.start), lateMin: lateBy }); }
+        const m = actual.get(key)!; const lateBy = def ? m - start : 0;
+        if (def && lateBy > LATE_TOLERANCE_MIN) { e.late++; lates.push({ name: e.name, day: ADH_DAYS[di], shift: def.label, enteredAt: fmtMin(m), expected: fmtMin(start), lateMin: lateBy }); }
       } else { e.absent++; noShows.push({ name: e.name, day: ADH_DAYS[di], shift: def?.label ?? pl.shift_key }); }
     }
     for (const [key, m] of actual) {
@@ -1562,6 +1698,9 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
     const storeIds = stores.map((s) => s.id as string);
     const storeCode = new Map(stores.map((s) => [s.id as string, s.code as string]));
     if (!storeIds.length) return { weekStart, rows: [], latestDataWeek: null };
+    // Hora de entrada por tienda vigente en la semana evaluada (default 6:00): la
+    // puntualidad se mide contra la hora real de la tienda del colaborador.
+    const amEntryByStore = await loadStoreAmEntry(storeIds, weekStart);
 
     // Semana de evaluación (sábado) MÁS RECIENTE con actividad de caja/MBK en el alcance.
     // Sirve para que una tienda/zona nueva —cuya semana cerrada por defecto aún está
@@ -1624,10 +1763,11 @@ export const getAttendanceKpis = createServerFn({ method: "POST" })
       }
 
       // Puntualidad: solo entradas DENTRO de la semana; agrupar por (fecha,turno), la más temprana.
+      const amEntry = amEntryByStore.get(e.storeId) ?? DEFAULT_AM_ENTRY;
       const shiftMap = new Map<string, { date: string; turno: "AM" | "PM"; mins: number; start: number }>();
       for (const ev of evs) {
         if (ev.type !== "entrada" || !ev.inWeek) continue;
-        const { start, turno } = expectedStart(e.role, ev.mins);
+        const { start, turno } = expectedStart(e.role, ev.mins, amEntry);
         const key = `${ev.date}|${turno}`;
         const cur = shiftMap.get(key);
         if (!cur || ev.mins < cur.mins) shiftMap.set(key, { date: ev.date, turno, mins: ev.mins, start });
