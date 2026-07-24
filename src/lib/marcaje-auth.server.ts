@@ -5,14 +5,12 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
  * Fuente única usada por markAttendance, lookupEmployee y beginWebauthnAuth.
  *
  * - Cualquier colaborador puede marcar en su tienda ancla (employees.store_id).
- * - gerente_zona: cualquier tienda de SU ZONA (la zona de su tienda ancla),
- *   derivada en vivo (no depende de datos sembrados estáticos), MÁS los puntos
- *   asignados explícitamente en employee_store_assignments. Esto último cubre dos
- *   casos reales de la operación: el GZ que arranca su semana en una tienda fuera
- *   de su zona (la más cercana a su casa, p. ej. Julio en A59 siendo de Jinotega)
- *   y el marcaje en Oficina los días de reunión. NO se resuelve moviéndole el ancla,
- *   porque el ancla es lo que define QUÉ zona supervisa.
- * - gerente (Gerente de Tienda): además, cualquier tienda listada en
+ * - gerente_zona: CUALQUIER tienda activa. Su rutina real lo lleva por toda la
+ *   operación (tienda base fuera de su zona por cercanía a su casa, cobertura de
+ *   otro GZ de vacaciones, recorrido variable). El resguardo no es la lista de
+ *   tiendas sino la GEOCERCA + el ROSTRO: solo marca donde está físicamente, y es
+ *   su propia asistencia (no da acceso a datos de la tienda).
+ * - gerente (Gerente de Tienda): además de su ancla, cualquier tienda listada en
  *   employee_store_assignments (soporte multi-tienda).
  * - cualquier otro rol (cajero / agente_mbk / limpieza / seguridad interna o
  *   tercerizada): SOLO su tienda ancla.
@@ -24,25 +22,9 @@ export async function employeeCanMarkAtStore(
   // Tienda ancla: siempre permitido.
   if (employee.store_id === store.id) return true;
 
-  if (employee.role === "gerente_zona") {
-    if (store.zone_id) {
-      const { data: anchor } = await supabaseAdmin
-        .from("stores")
-        .select("zone_id")
-        .eq("id", employee.store_id)
-        .maybeSingle();
-      if (anchor?.zone_id && anchor.zone_id === store.zone_id) return true;
-    }
-    // Punto asignado a mano (Oficina, o la tienda donde arranca su semana aunque
-    // sea de otra zona). Sin esto tendría que marcar solo dentro de su zona.
-    const { data: assign } = await supabaseAdmin
-      .from("employee_store_assignments")
-      .select("id")
-      .eq("employee_id", employee.id)
-      .eq("store_id", store.id)
-      .maybeSingle();
-    return !!assign;
-  }
+  // El GZ marca en cualquier tienda activa (recorrido, tienda base fuera de zona,
+  // cobertura de vacaciones). La geocerca y el rostro son el resguardo.
+  if (employee.role === "gerente_zona") return true;
 
   if (employee.role === "gerente") {
     const { data: assign } = await supabaseAdmin

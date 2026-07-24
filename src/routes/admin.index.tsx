@@ -568,6 +568,21 @@ function EmployeesPanel() {
     }
     if (saving) return; // evita que un doble clic cree al colaborador dos veces
     setSaving(true);
+    // Traslado permanente: cambió la tienda de un colaborador ya existente. Se confirma
+    // porque reasigna de forma definitiva; el historial de marcajes anterior NO se mueve
+    // (cada marcaje queda en la tienda donde ocurrió), solo cambia dónde marca de ahora
+    // en adelante.
+    if (editing && form.store_id !== editing.store_id) {
+      const antigua = storeList.find((s) => s.id === editing.store_id);
+      const nueva = storeList.find((s) => s.id === form.store_id);
+      if (!window.confirm(
+        `¿Trasladar a ${form.full_name} de ${antigua?.code ?? "su tienda"} a ${nueva?.code ?? "la nueva tienda"}?\n\n` +
+        `Desde ahora marcará en ${nueva?.code ?? "la nueva tienda"}. Sus marcajes anteriores se conservan en ${antigua?.code ?? "la tienda anterior"} (no se mueven).`,
+      )) {
+        setSaving(false);
+        return;
+      }
+    }
     try {
       if (editing) {
         await updateFn({
