@@ -3842,11 +3842,18 @@ function EnrollFaceDialog({
 }
 
 /**
- * Hora de entrada del equipo por tienda (agentes). El GT la pone UNA VEZ, precargada
- * con la hora que su gente ya marca de verdad (no la teclea a ciegas). Después queda
- * bloqueada para el GT; el GZ/Operaciones puede cambiarla. Solo afecta a los agentes;
- * GT y GZ tienen su propia regla (8:00).
+ * Horas de entrada del equipo por tienda (agentes). Son 4 turnos independientes:
+ * Productos AM/PM y MBK AM/PM. El GT las pone UNA VEZ, precargadas con la hora que su
+ * gente ya marca de verdad (no las teclea a ciegas). Después quedan bloqueadas para el
+ * GT; el GZ/Operaciones las cambia. Solo afectan a los agentes; GT y GZ van a las 8:00.
  */
+type EntryShiftInfo = { configured: string | null; suggested: string | null; samples: number };
+const SHIFT_DEFAULTS: Record<string, string> = { prodAm: "06:00", prodPm: "18:00", mbkAm: "06:00", mbkPm: "14:00" };
+const SHIFT_LABELS: Array<{ key: "prodAm" | "prodPm" | "mbkAm" | "mbkPm"; label: string }> = [
+  { key: "prodAm", label: "Productos AM" }, { key: "prodPm", label: "Productos PM" },
+  { key: "mbkAm", label: "MBK AM" }, { key: "mbkPm", label: "MBK PM" },
+];
+
 function StoreEntryHoursCard({ storeId, zoneId }: { storeId: string; zoneId: string }) {
   const getFn = useServerFn(getStoreEntryHours);
   const setFn = useServerFn(setStoreEntryHour);
@@ -3859,29 +3866,31 @@ function StoreEntryHoursCard({ storeId, zoneId }: { storeId: string; zoneId: str
     queryFn: () => getFn({ data: args }),
     refetchInterval: false,
   });
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  // draft[storeId][shiftKey] = "HH:MM"
+  const [draft, setDraft] = useState<Record<string, Record<string, string>>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   if (!data) return null;
   const rows = data.rows ?? [];
   if (!rows.length) return null;
   const pendientes = rows.filter((r) => !r.configured).length;
 
+  const valOf = (r: (typeof rows)[number], key: "prodAm" | "prodPm" | "mbkAm" | "mbkPm") =>
+    draft[r.storeId]?.[key] ?? (r[key] as EntryShiftInfo).configured ?? (r[key] as EntryShiftInfo).suggested ?? SHIFT_DEFAULTS[key];
+  const toMin = (hhmm: string) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + (m || 0); };
+
   const save = async (r: (typeof rows)[number]) => {
-    const hhmm = draft[r.storeId] ?? r.configured ?? r.suggested ?? "06:00";
-    const [h, m] = hhmm.split(":").map(Number);
-    const amEntryMin = h * 60 + (m || 0);
-    if (!(amEntryMin >= 240 && amEntryMin <= 720)) {
-      toast.error("La hora de entrada debe estar entre 04:00 y 12:00.");
-      return;
-    }
     setSavingId(r.storeId);
     try {
-      await setFn({ data: { storeId: r.storeId, amEntryMin } });
-      toast.success(`Hora de entrada de ${r.code} guardada: ${hhmm}. Aplica desde hoy; los días anteriores no cambian.`);
+      await setFn({ data: {
+        storeId: r.storeId,
+        prodAmMin: toMin(valOf(r, "prodAm")), prodPmMin: toMin(valOf(r, "prodPm")),
+        mbkAmMin: toMin(valOf(r, "mbkAm")), mbkPmMin: toMin(valOf(r, "mbkPm")),
+      } });
+      toast.success(`Horas de ${r.code} guardadas. Aplican desde hoy; los días anteriores no cambian.`);
       qc.invalidateQueries({ queryKey: ["storeEntryHours"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     } catch (e) {
-      toast.error(errorMsg(e, "No se pudo guardar la hora"));
+      toast.error(errorMsg(e, "No se pudieron guardar las horas"));
     } finally {
       setSavingId(null);
     }
@@ -3891,74 +3900,60 @@ function StoreEntryHoursCard({ storeId, zoneId }: { storeId: string; zoneId: str
     <div className="bg-card rounded-2xl border border-border overflow-hidden">
       <div className="p-4 border-b border-border flex items-center gap-2 flex-wrap">
         <Clock className="h-4 w-4 text-accent" />
-        <h3 className="font-semibold text-foreground">Hora de entrada del equipo</h3>
+        <h3 className="font-semibold text-foreground">Horas de entrada del equipo</h3>
         {pendientes > 0 && (
           <Badge className="bg-destructive text-destructive-foreground hover:bg-destructive">{pendientes} sin configurar</Badge>
         )}
         <p className="w-full text-xs text-muted-foreground">
-          A qué hora entra el turno de la mañana en tu tienda. Solo aplica a los agentes (Productos/MBK); el turno de la noche se corre solo.
-          {data.canEditFree ? "" : " Se configura una vez; para cambiarla pídeselo a tu Gerente de Zona."}
+          A qué hora entra cada turno de tus agentes: Productos y MBK, mañana y noche (4 horas).
+          Debajo de cada campo, entre paréntesis, la hora que tu equipo ya marca de verdad.
+          {data.canEditFree ? "" : " Se configuran una vez; para cambiarlas pídeselo a tu Gerente de Zona."}
         </p>
       </div>
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-secondary/50">
-              <TableHead>Tienda</TableHead>
-              <TableHead>Hora actual</TableHead>
-              <TableHead>Tu equipo entra ~</TableHead>
-              <TableHead className="text-right">Configurar</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r) => {
-              const locked = !data.canEditFree && !!r.configured; // GT ya la fijó
-              return (
-                <TableRow key={r.storeId}>
-                  <TableCell>
-                    <div className="font-mono text-foreground">{r.code}</div>
-                    <div className="text-xs text-muted-foreground">{r.name}</div>
-                  </TableCell>
-                  <TableCell>
-                    {r.configured ? (
-                      <span className="font-mono">{r.configured}</span>
-                    ) : (
-                      <Badge variant="outline" className="border-amber-500 text-amber-700">Sin configurar (6:00 por defecto)</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {r.suggested ? (
-                      <>
-                        <span className="font-mono">{r.suggested}</span>
-                        <span className="text-xs text-muted-foreground"> · {r.samples} marcajes</span>
-                      </>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">sin datos aún</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {locked ? (
-                      <span className="text-xs text-muted-foreground">bloqueada</span>
-                    ) : (
-                      <div className="flex items-center gap-1.5 justify-end">
+      <div className="divide-y divide-border">
+        {rows.map((r) => {
+          const locked = !data.canEditFree && r.configured; // GT ya las fijó
+          return (
+            <div key={r.storeId} className="p-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="min-w-[120px]">
+                <div className="font-mono font-medium text-foreground">{r.code}</div>
+                <div className="text-xs text-muted-foreground">{r.name}</div>
+                {!r.configured && (
+                  <Badge variant="outline" className="mt-1 border-amber-500 text-amber-700">Sin configurar (usa estándar)</Badge>
+                )}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-1">
+                {SHIFT_LABELS.map(({ key, label }) => {
+                  const info = r[key] as EntryShiftInfo;
+                  return (
+                    <div key={key} className="flex flex-col gap-0.5">
+                      <label className="text-[11px] font-medium text-muted-foreground">{label}</label>
+                      {locked ? (
+                        <span className="font-mono text-sm h-8 flex items-center">{info.configured ?? SHIFT_DEFAULTS[key]}</span>
+                      ) : (
                         <input
                           type="time"
                           className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                          defaultValue={r.configured ?? r.suggested ?? "06:00"}
-                          onChange={(e) => setDraft((d) => ({ ...d, [r.storeId]: e.target.value }))}
+                          defaultValue={valOf(r, key)}
+                          onChange={(e) => setDraft((d) => ({ ...d, [r.storeId]: { ...d[r.storeId], [key]: e.target.value } }))}
                         />
-                        <Button size="sm" disabled={savingId === r.storeId} onClick={() => save(r)}
-                          className="bg-accent text-accent-foreground hover:bg-accent/90">
-                          {savingId === r.storeId ? "…" : r.configured ? "Cambiar" : "Guardar"}
-                        </Button>
-                      </div>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+                      )}
+                      <span className="text-[10px] text-muted-foreground">
+                        {info.suggested ? `real: ${info.suggested}` : "sin datos"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {!locked && (
+                <Button size="sm" disabled={savingId === r.storeId} onClick={() => save(r)}
+                  className="bg-accent text-accent-foreground hover:bg-accent/90 sm:self-end">
+                  {savingId === r.storeId ? "Guardando…" : r.configured ? "Cambiar" : "Guardar"}
+                </Button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

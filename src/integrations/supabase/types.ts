@@ -380,30 +380,39 @@ export type Database = {
       }
       store_shift_hours: {
         Row: {
-          am_entry_min: number
           created_at: string
           created_by: string | null
           effective_from: string
           id: string
+          mbk_am_entry_min: number
+          mbk_pm_entry_min: number
           note: string | null
+          prod_am_entry_min: number
+          prod_pm_entry_min: number
           store_id: string
         }
         Insert: {
-          am_entry_min: number
           created_at?: string
           created_by?: string | null
           effective_from: string
           id?: string
+          mbk_am_entry_min: number
+          mbk_pm_entry_min: number
           note?: string | null
+          prod_am_entry_min: number
+          prod_pm_entry_min: number
           store_id: string
         }
         Update: {
-          am_entry_min?: number
           created_at?: string
           created_by?: string | null
           effective_from?: string
           id?: string
+          mbk_am_entry_min?: number
+          mbk_pm_entry_min?: number
           note?: string | null
+          prod_am_entry_min?: number
+          prod_pm_entry_min?: number
           store_id?: string
         }
         Relationships: [
@@ -638,11 +647,6 @@ export type Database = {
       is_zone_user: {
         Args: { _user_id: string; _zone_id: string }
         Returns: boolean
-      }
-      /** Hora AM de entrada (min desde medianoche, default 360=6:00) vigente para una tienda en una fecha. */
-      store_am_entry_min: {
-        Args: { _on: string; _store_id: string }
-        Returns: number
       }
       /** Tiendas con al menos un marcaje en los últimos N días (excluye CAPACITACION). */
       tiendas_con_marcaje: {
